@@ -12,8 +12,8 @@ pub use blobstore::{BlobMetadata, BlobStore, QueryOptions};
 pub use concurrent::{BatchWorker, ConcurrentBlobStore, ConnectionPool, ReadGuard, WriteGuard};
 pub use graph_store::{Graph, GraphEdge, GraphNode, GraphQueryOptions, GraphStore};
 pub use search::{
-    FullTextIndex, HighlightedResult, IndexStatistics, SearchResult, SearchableBlobStore,
-    TokenizerOptions,
+    FullTextIndex, FuzzyConfig, FuzzySearchResult, FuzzyTrie, HighlightedResult, IndexStatistics,
+    SearchResult, SearchableBlobStore, TokenizerOptions,
 };
 pub use serialization::{SerializationFormat, SerializationHelper};
 pub use vector::{HybridSearch, VectorConfig, VectorSearchResult, VectorStatistics, VectorStore};

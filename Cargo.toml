@@ -22,6 +22,7 @@ parking_lot = "0.12.5"
 ndarray = "0.15"  # For vector operations
 rayon = "1.7"  # For parallel processing
 fastembed = { version = "5.13.0" }
+strsim = "0.11"
 
 [dev-dependencies]
 tempfile = "3.0"

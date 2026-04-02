@@ -1,9 +1,10 @@
-use crate::blobstore::BlobStore;
+use crate::blobstore::{BlobMetadata, BlobStore};
 use crate::serialization::{SerializationFormat, SerializationHelper};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use strsim::{damerau_levenshtein, levenshtein};
 
 /// Tokenizer options for text processing
 #[derive(Debug, Clone)]
@@ -41,18 +42,47 @@ pub struct SearchResult {
     pub key: String,
     pub score: f64,
     pub matches: Vec<String>,
-    pub metadata: Option<crate::blobstore::BlobMetadata>,
+    pub metadata: Option<BlobMetadata>,
+}
+
+/// Fuzzy search configuration
+#[derive(Debug, Clone)]
+pub struct FuzzyConfig {
+    pub max_distance: usize,
+    pub max_edits: usize,
+    pub prefix_length: usize,
+    pub use_damerau: bool,
+}
+
+impl Default for FuzzyConfig {
+    fn default() -> Self {
+        FuzzyConfig {
+            max_distance: 3,
+            max_edits: 2,
+            prefix_length: 3,
+            use_damerau: false,
+        }
+    }
+}
+
+/// Fuzzy search result
+#[derive(Debug, Clone)]
+pub struct FuzzySearchResult {
+    pub key: String,
+    pub term: String,
+    pub distance: usize,
+    pub score: f64,
+    pub metadata: Option<BlobMetadata>,
 }
 
 /// Full-text search index
 pub struct FullTextIndex {
-    inverted_index: Arc<RwLock<HashMap<String, HashMap<String, usize>>>>, // term -> (key -> frequency)
+    inverted_index: Arc<RwLock<HashMap<String, HashMap<String, usize>>>>,
     tokenizer_options: TokenizerOptions,
     index_serializer: SerializationFormat,
 }
 
 impl FullTextIndex {
-    /// Create a new full-text index
     pub fn new(options: TokenizerOptions) -> Self {
         FullTextIndex {
             inverted_index: Arc::new(RwLock::new(HashMap::new())),
@@ -61,25 +91,21 @@ impl FullTextIndex {
         }
     }
 
-    /// Index a document (key -> text content)
     pub fn index_document(&self, key: &str, content: &str) {
         let tokens = self.tokenize(content);
         let mut index = self.inverted_index.write();
 
-        // Count term frequencies for this document
         let mut term_freq: HashMap<String, usize> = HashMap::new();
         for token in tokens {
             *term_freq.entry(token).or_insert(0) += 1;
         }
 
-        // Update inverted index
         for (term, freq) in term_freq {
             let doc_map = index.entry(term).or_insert_with(HashMap::new);
             *doc_map.entry(key.to_string()).or_insert(0) += freq;
         }
     }
 
-    /// Remove a document from the index
     pub fn remove_document(&self, key: &str) {
         let mut index = self.inverted_index.write();
         let mut to_remove = Vec::new();
@@ -96,19 +122,17 @@ impl FullTextIndex {
         }
     }
 
-    /// Search for a query and return ranked results
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         let query_tokens = self.tokenize(query);
         let index = self.inverted_index.read();
 
-        // Calculate TF-IDF scores
         let mut scores: HashMap<String, f64> = HashMap::new();
         let mut matches: HashMap<String, Vec<String>> = HashMap::new();
 
         for token in query_tokens {
             if let Some(docs) = index.get(&token) {
                 for (doc, freq) in docs {
-                    let score = *freq as f64; // Simple term frequency
+                    let score = *freq as f64;
                     *scores.entry(doc.clone()).or_insert(0.0) += score;
                     matches
                         .entry(doc.clone())
@@ -118,7 +142,6 @@ impl FullTextIndex {
             }
         }
 
-        // Sort by score and collect results
         let mut results: Vec<SearchResult> = scores
             .into_iter()
             .map(|(key, score)| {
@@ -138,7 +161,80 @@ impl FullTextIndex {
         results
     }
 
-    /// Save index to disk
+    pub fn fuzzy_search(
+        &self,
+        query: &str,
+        config: &FuzzyConfig,
+        limit: usize,
+    ) -> Vec<FuzzySearchResult> {
+        let query_tokens = self.tokenize(query);
+        let index = self.inverted_index.read();
+        let mut results = Vec::new();
+
+        for query_token in query_tokens {
+            if let Some(docs) = index.get(&query_token) {
+                for doc in docs.keys() {
+                    results.push(FuzzySearchResult {
+                        key: doc.clone(),
+                        term: query_token.clone(),
+                        distance: 0,
+                        score: 1.0,
+                        metadata: None,
+                    });
+                }
+            }
+
+            for (term, docs) in index.iter() {
+                let distance = if config.use_damerau {
+                    damerau_levenshtein(&query_token, term)
+                } else {
+                    levenshtein(&query_token, term)
+                };
+
+                if distance <= config.max_distance && distance > 0 {
+                    if config.prefix_length > 0 {
+                        let prefix_match = query_token.len() >= config.prefix_length
+                            && term.len() >= config.prefix_length
+                            && &query_token[..config.prefix_length]
+                                == &term[..config.prefix_length];
+
+                        if !prefix_match {
+                            continue;
+                        }
+                    }
+
+                    let score = 1.0 - (distance as f64 / config.max_distance as f64);
+
+                    for doc in docs.keys() {
+                        results.push(FuzzySearchResult {
+                            key: doc.clone(),
+                            term: term.clone(),
+                            distance,
+                            score,
+                            metadata: None,
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut unique_results: HashMap<String, FuzzySearchResult> = HashMap::new();
+        for result in results {
+            let entry = unique_results
+                .entry(result.key.clone())
+                .or_insert(result.clone());
+            if result.score > entry.score {
+                *entry = result;
+            }
+        }
+
+        let mut final_results: Vec<FuzzySearchResult> = unique_results.into_values().collect();
+        final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        final_results.truncate(limit);
+
+        final_results
+    }
+
     pub fn save(
         &self,
         store: &mut BlobStore,
@@ -149,7 +245,6 @@ impl FullTextIndex {
         Ok(())
     }
 
-    /// Load index from disk
     pub fn load(
         store: &BlobStore,
         options: TokenizerOptions,
@@ -169,7 +264,6 @@ impl FullTextIndex {
         })
     }
 
-    /// Get index statistics
     pub fn statistics(&self) -> IndexStatistics {
         let index = self.inverted_index.read();
         let total_terms = index.len();
@@ -182,7 +276,10 @@ impl FullTextIndex {
         }
     }
 
-    /// Tokenize text for indexing/searching
+    pub fn tokenize_text(&self, text: &str) -> Vec<String> {
+        self.tokenize(text)
+    }
+
     fn tokenize(&self, text: &str) -> Vec<String> {
         let mut tokens = Vec::new();
         let processed_text = if self.tokenizer_options.case_sensitive {
@@ -191,7 +288,6 @@ impl FullTextIndex {
             text.to_lowercase()
         };
 
-        // Split by common delimiters
         for word in processed_text.split(|c: char| !c.is_alphanumeric()) {
             if word.is_empty() {
                 continue;
@@ -219,16 +315,10 @@ impl FullTextIndex {
 
         tokens
     }
-    /// Public method to tokenize text (useful for testing)
-    pub fn tokenize_text(&self, text: &str) -> Vec<String> {
-        self.tokenize(text)
-    }
 
-    /// Simple stemming (remove common suffixes)
     fn stem_word(&self, word: &str) -> String {
         let word = word.to_lowercase();
 
-        // Remove common suffixes
         let suffixes = ["ing", "ed", "s", "es", "ly", "ment", "tion", "able", "ible"];
         for suffix in suffixes {
             if word.ends_with(suffix) && word.len() > suffix.len() + 2 {
@@ -256,7 +346,6 @@ pub struct SearchableBlobStore {
 }
 
 impl SearchableBlobStore {
-    /// Create a new searchable blobstore
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let store = BlobStore::open(path)?;
         let index = FullTextIndex::load(&store, TokenizerOptions::default())?;
@@ -267,17 +356,7 @@ impl SearchableBlobStore {
             auto_index: true,
         })
     }
-    pub fn open_with_existing_store(
-        store: BlobStore,
-    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let index = FullTextIndex::load(&store, TokenizerOptions::default())?;
-        Ok(SearchableBlobStore {
-            store,
-            index,
-            auto_index: true,
-        })
-    }
-    /// Create with custom tokenizer options
+
     pub fn open_with_options<P: AsRef<Path>>(
         path: P,
         options: TokenizerOptions,
@@ -292,12 +371,21 @@ impl SearchableBlobStore {
         })
     }
 
-    /// Store data with automatic indexing
+    pub fn open_with_existing_store(
+        store: BlobStore,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let index = FullTextIndex::load(&store, TokenizerOptions::default())?;
+        Ok(SearchableBlobStore {
+            store,
+            index,
+            auto_index: true,
+        })
+    }
+
     pub fn put(&mut self, key: &str, data: &[u8], prefix: Option<&str>) -> Result<(), redb::Error> {
         self.store.put(key, data, prefix)?;
 
         if self.auto_index {
-            // Index text content if it looks like UTF-8 text
             if let Ok(text) = std::str::from_utf8(data) {
                 self.index.index_document(key, text);
             }
@@ -306,7 +394,6 @@ impl SearchableBlobStore {
         Ok(())
     }
 
-    /// Store text data with explicit indexing
     pub fn put_text(
         &mut self,
         key: &str,
@@ -322,12 +409,10 @@ impl SearchableBlobStore {
         Ok(())
     }
 
-    /// Retrieve data
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, redb::Error> {
         self.store.get(key)
     }
 
-    /// Remove data and update index
     pub fn remove(&mut self, key: &str) -> Result<bool, redb::Error> {
         let removed = self.store.remove(key)?;
         if removed {
@@ -336,11 +421,9 @@ impl SearchableBlobStore {
         Ok(removed)
     }
 
-    /// Search for text across all indexed documents
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<SearchResult>, redb::Error> {
         let mut results = self.index.search(query, limit);
 
-        // Enrich results with metadata
         for result in &mut results {
             if let Ok(metadata) = self.store.get_metadata(&result.key) {
                 result.metadata = metadata;
@@ -350,7 +433,6 @@ impl SearchableBlobStore {
         Ok(results)
     }
 
-    /// Search with highlighting
     pub fn search_with_highlight(
         &self,
         query: &str,
@@ -376,17 +458,57 @@ impl SearchableBlobStore {
         Ok(highlighted)
     }
 
-    /// Save index to disk
+    pub fn fuzzy_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<FuzzySearchResult>, redb::Error> {
+        let config = FuzzyConfig::default();
+        let mut results = self.index.fuzzy_search(query, &config, limit);
+
+        for result in &mut results {
+            if let Ok(metadata) = self.store.get_metadata(&result.key) {
+                result.metadata = metadata;
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub fn fuzzy_search_with_config(
+        &self,
+        query: &str,
+        config: &FuzzyConfig,
+        limit: usize,
+    ) -> Result<Vec<FuzzySearchResult>, redb::Error> {
+        let mut results = self.index.fuzzy_search(query, config, limit);
+
+        for result in &mut results {
+            if let Ok(metadata) = self.store.get_metadata(&result.key) {
+                result.metadata = metadata;
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub fn fuzzy_search_damerau(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<FuzzySearchResult>, redb::Error> {
+        let mut config = FuzzyConfig::default();
+        config.use_damerau = true;
+        self.fuzzy_search_with_config(query, &config, limit)
+    }
+
     pub fn save_index(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.index.save(&mut self.store)
     }
 
-    /// Reindex all data
     pub fn reindex(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Clear existing index
         self.index = FullTextIndex::new(TokenizerOptions::default());
 
-        // Reindex all text data
         let all_data = self.store.get_all()?;
         for (key, data) in all_data {
             if let Ok(text) = String::from_utf8(data) {
@@ -398,17 +520,14 @@ impl SearchableBlobStore {
         Ok(())
     }
 
-    /// Enable/disable automatic indexing
     pub fn set_auto_index(&mut self, enabled: bool) {
         self.auto_index = enabled;
     }
 
-    /// Get index statistics
     pub fn index_stats(&self) -> IndexStatistics {
         self.index.statistics()
     }
 
-    /// Highlight search terms in text
     fn highlight_text(text: &str, terms: &[String]) -> String {
         let mut result = text.to_string();
         for term in terms {
@@ -425,5 +544,97 @@ pub struct HighlightedResult {
     pub key: String,
     pub score: f64,
     pub highlighted_text: String,
-    pub metadata: Option<crate::blobstore::BlobMetadata>,
+    pub metadata: Option<BlobMetadata>,
+}
+
+/// Trie data structure for efficient fuzzy search
+pub struct FuzzyTrie {
+    root: TrieNode,
+}
+
+#[derive(Default)]
+struct TrieNode {
+    children: HashMap<char, TrieNode>,
+    is_end: bool,
+    terms: HashSet<String>,
+}
+
+impl FuzzyTrie {
+    pub fn new() -> Self {
+        FuzzyTrie {
+            root: TrieNode::default(),
+        }
+    }
+
+    pub fn insert(&mut self, term: &str) {
+        let mut node = &mut self.root;
+        for ch in term.chars() {
+            node = node.children.entry(ch).or_insert_with(TrieNode::default);
+        }
+        node.is_end = true;
+        node.terms.insert(term.to_string());
+    }
+
+    pub fn search(&self, query: &str, max_distance: usize) -> Vec<(String, usize)> {
+        let mut results = Vec::new();
+        let query_chars: Vec<char> = query.chars().collect();
+
+        self.search_recursive(&self.root, &query_chars, 0, 0, max_distance, &mut results);
+
+        results.sort_by(|a, b| a.1.cmp(&b.1));
+        results
+    }
+
+    fn search_recursive(
+        &self,
+        node: &TrieNode,
+        query: &[char],
+        pos: usize,
+        dist: usize,
+        max_distance: usize,
+        results: &mut Vec<(String, usize)>,
+    ) {
+        if dist > max_distance {
+            return;
+        }
+
+        if pos == query.len() {
+            if node.is_end {
+                for term in &node.terms {
+                    results.push((term.clone(), dist));
+                }
+            }
+            return;
+        }
+
+        for (&ch, child) in &node.children {
+            let new_dist = if ch == query[pos] { dist } else { dist + 1 };
+            self.search_recursive(child, query, pos + 1, new_dist, max_distance, results);
+        }
+
+        self.search_recursive(node, query, pos + 1, dist + 1, max_distance, results);
+
+        for child in node.children.values() {
+            self.search_recursive(child, query, pos, dist + 1, max_distance, results);
+        }
+
+        if pos + 1 < query.len() {
+            for (&ch1, child1) in &node.children {
+                if ch1 == query[pos + 1] {
+                    for (&ch2, child2) in &child1.children {
+                        if ch2 == query[pos] {
+                            self.search_recursive(
+                                child2,
+                                query,
+                                pos + 2,
+                                dist + 1,
+                                max_distance,
+                                results,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
