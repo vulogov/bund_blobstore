@@ -8,8 +8,9 @@ pub mod multi_modal;
 pub mod pool;
 pub mod search;
 pub mod serialization;
+pub mod sharding;
 pub mod timeline;
-pub mod vector; // Add timeline module
+pub mod vector;
 
 // Re-export commonly used types
 pub use blobstore::{BlobMetadata, BlobStore, QueryOptions};
@@ -61,4 +62,9 @@ pub use pool::ConnectionPool;
 pub use timeline::{
     AggregatedTelemetry, MinuteBucket, TelemetryQuery, TelemetryRecord, TelemetryStore,
     TelemetryValue, TimeInterval,
+};
+
+pub use sharding::{
+    AllocationType, ShardAllocation, ShardConfig, ShardDetail, ShardManager, ShardManagerBuilder,
+    ShardOperation, ShardResult, ShardStatistics, ShardingStrategy,
 };
