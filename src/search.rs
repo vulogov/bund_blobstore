@@ -267,7 +267,16 @@ impl SearchableBlobStore {
             auto_index: true,
         })
     }
-
+    pub fn open_with_existing_store(
+        store: BlobStore,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let index = FullTextIndex::load(&store, TokenizerOptions::default())?;
+        Ok(SearchableBlobStore {
+            store,
+            index,
+            auto_index: true,
+        })
+    }
     /// Create with custom tokenizer options
     pub fn open_with_options<P: AsRef<Path>>(
         path: P,
