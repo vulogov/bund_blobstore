@@ -2,6 +2,11 @@
 name = "bund_blobstore"
 version = "0.1.0"
 edition = "2024"
+description = "Basic support for storing compiled BUND bytecode into an external file"
+license-file = "LICENSE"
+repository = "https://github.com/vulogov/bund_blobstore"
+categories = ["data-structures"]
+keywords = ["value", "bund", "data", "blob"]
 
 [dependencies]
 easy-error = "1.0.*"
