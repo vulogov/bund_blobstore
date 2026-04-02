@@ -8,7 +8,8 @@ pub mod multi_modal;
 pub mod pool;
 pub mod search;
 pub mod serialization;
-pub mod vector;
+pub mod timeline;
+pub mod vector; // Add timeline module
 
 // Re-export commonly used types
 pub use blobstore::{BlobMetadata, BlobStore, QueryOptions};
@@ -28,7 +29,7 @@ pub use vector::{
     VectorStore,
 };
 
-// Re-export concurrent types from their respective modules
+// Re-export concurrent types
 pub use concurrent::{
     BlobReadGuard, BlobWriteGuard, ConcurrentBlobStore, ConcurrentFacetedIndex,
     ConcurrentGraphStore, ConcurrentMultiModalStore, ConcurrentSearchStore, ConcurrentVectorStore,
@@ -37,6 +38,10 @@ pub use concurrent::{
     VectorReadGuard, VectorWriteGuard,
 };
 
-// Re-export batch and pool from their modules
 pub use batch::{BatchOperation, BatchWorker};
 pub use pool::ConnectionPool;
+
+pub use timeline::{
+    AggregatedTelemetry, MinuteBucket, TelemetryQuery, TelemetryRecord, TelemetryStore,
+    TelemetryValue, TimeInterval,
+};
