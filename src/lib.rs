@@ -1,18 +1,17 @@
-extern crate log;
-
+pub mod batch;
 pub mod blobstore;
 pub mod concurrent;
 pub mod faceted_search;
 pub mod fuzzy_algorithms;
 pub mod graph_store;
 pub mod multi_modal;
+pub mod pool;
 pub mod search;
 pub mod serialization;
 pub mod vector;
 
 // Re-export commonly used types
 pub use blobstore::{BlobMetadata, BlobStore, QueryOptions};
-pub use concurrent::{BatchWorker, ConcurrentBlobStore, ConnectionPool, ReadGuard, WriteGuard};
 pub use faceted_search::{
     Facet, FacetValue, FacetedDocument, FacetedQuery, FacetedSearchIndex, FacetedSearchResult,
 };
@@ -28,3 +27,16 @@ pub use vector::{
     HybridSearch, HybridSearchResult, VectorConfig, VectorSearchResult, VectorStatistics,
     VectorStore,
 };
+
+// Re-export concurrent types from their respective modules
+pub use concurrent::{
+    BlobReadGuard, BlobWriteGuard, ConcurrentBlobStore, ConcurrentFacetedIndex,
+    ConcurrentGraphStore, ConcurrentMultiModalStore, ConcurrentSearchStore, ConcurrentVectorStore,
+    FacetedReadGuard, FacetedWriteGuard, GraphReadGuard, GraphWriteGuard, MultiModalReadGuard,
+    MultiModalWriteGuard, SearchReadGuard, SearchWriteGuard, UnifiedConcurrentStore,
+    VectorReadGuard, VectorWriteGuard,
+};
+
+// Re-export batch and pool from their modules
+pub use batch::{BatchOperation, BatchWorker};
+pub use pool::ConnectionPool;

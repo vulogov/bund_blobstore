@@ -1,16 +1,19 @@
 use crate::blobstore::BlobStore;
-use crossbeam::channel::{Receiver, Sender, bounded};
+use crate::faceted_search::FacetedSearchIndex;
+use crate::graph_store::GraphStore;
+use crate::multi_modal::MultiModalStore;
+use crate::search::SearchableBlobStore;
+use crate::vector::VectorStore;
 use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-/// Thread-safe wrapper around BlobStore
+/// Thread-safe wrapper for BlobStore
 #[derive(Clone)]
 pub struct ConcurrentBlobStore {
-    inner: Arc<RwLock<BlobStore>>,
+    pub inner: Arc<RwLock<BlobStore>>,
 }
 
 impl ConcurrentBlobStore {
-    /// Create a new concurrent blob store
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, redb::Error> {
         let store = BlobStore::open(path)?;
         Ok(ConcurrentBlobStore {
@@ -18,54 +21,59 @@ impl ConcurrentBlobStore {
         })
     }
 
-    /// Acquire a read lock
-    pub fn read(&self) -> ReadGuard<'_> {
-        ReadGuard {
+    pub fn read(&self) -> BlobReadGuard<'_> {
+        BlobReadGuard {
             guard: self.inner.read().unwrap(),
         }
     }
 
-    /// Acquire a write lock
-    pub fn write(&self) -> WriteGuard<'_> {
-        WriteGuard {
+    pub fn write(&self) -> BlobWriteGuard<'_> {
+        BlobWriteGuard {
             guard: self.inner.write().unwrap(),
         }
     }
 
-    /// Concurrent put operation
     pub fn put(&self, key: &str, data: &[u8], prefix: Option<&str>) -> Result<(), redb::Error> {
         let mut write_guard = self.inner.write().unwrap();
         write_guard.put(key, data, prefix)
     }
 
-    /// Concurrent get operation
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, redb::Error> {
         let read_guard = self.inner.read().unwrap();
         read_guard.get(key)
     }
 
-    /// Concurrent remove operation
     pub fn remove(&self, key: &str) -> Result<bool, redb::Error> {
         let mut write_guard = self.inner.write().unwrap();
         write_guard.remove(key)
     }
 
-    /// Get store statistics
-    pub fn stats(&self) -> Result<StoreStats, redb::Error> {
+    pub fn exists(&self, key: &str) -> Result<bool, redb::Error> {
         let read_guard = self.inner.read().unwrap();
-        Ok(StoreStats {
-            total_blobs: read_guard.len()?,
-            keys: read_guard.list_keys()?,
-        })
+        read_guard.exists(key)
+    }
+
+    pub fn len(&self) -> Result<usize, redb::Error> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.len()
+    }
+
+    pub fn verify_integrity(&self, key: &str) -> Result<bool, redb::Error> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.verify_integrity(key)
+    }
+
+    pub fn list_keys(&self) -> Result<Vec<String>, redb::Error> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.list_keys()
     }
 }
 
-/// Read guard for concurrent access
-pub struct ReadGuard<'a> {
-    guard: RwLockReadGuard<'a, BlobStore>,
+pub struct BlobReadGuard<'a> {
+    pub guard: RwLockReadGuard<'a, BlobStore>,
 }
 
-impl<'a> ReadGuard<'a> {
+impl<'a> BlobReadGuard<'a> {
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, redb::Error> {
         self.guard.get(key)
     }
@@ -74,17 +82,38 @@ impl<'a> ReadGuard<'a> {
         self.guard.exists(key)
     }
 
+    pub fn len(&self) -> Result<usize, redb::Error> {
+        self.guard.len()
+    }
+
     pub fn list_keys(&self) -> Result<Vec<String>, redb::Error> {
         self.guard.list_keys()
     }
+
+    pub fn get_metadata(
+        &self,
+        key: &str,
+    ) -> Result<Option<crate::blobstore::BlobMetadata>, redb::Error> {
+        self.guard.get_metadata(key)
+    }
+
+    pub fn verify_integrity(&self, key: &str) -> Result<bool, redb::Error> {
+        self.guard.verify_integrity(key)
+    }
+
+    pub fn query_by_prefix(
+        &self,
+        prefix: &str,
+    ) -> Result<Vec<(String, crate::blobstore::BlobMetadata)>, redb::Error> {
+        self.guard.query_by_prefix(prefix)
+    }
 }
 
-/// Write guard for concurrent access
-pub struct WriteGuard<'a> {
-    guard: RwLockWriteGuard<'a, BlobStore>,
+pub struct BlobWriteGuard<'a> {
+    pub guard: RwLockWriteGuard<'a, BlobStore>,
 }
 
-impl<'a> WriteGuard<'a> {
+impl<'a> BlobWriteGuard<'a> {
     pub fn put(&mut self, key: &str, data: &[u8], prefix: Option<&str>) -> Result<(), redb::Error> {
         self.guard.put(key, data, prefix)
     }
@@ -96,172 +125,571 @@ impl<'a> WriteGuard<'a> {
     pub fn clear(&mut self) -> Result<(), redb::Error> {
         self.guard.clear()
     }
-}
 
-/// Store statistics
-#[derive(Debug, Clone)]
-pub struct StoreStats {
-    pub total_blobs: usize,
-    pub keys: Vec<String>,
-}
-
-/// Batch operation worker
-pub struct BatchWorker {
-    sender: Sender<BatchOperation>,
-    receiver: Receiver<BatchOperation>,
-    store: ConcurrentBlobStore,
-}
-
-#[derive(Debug)]
-pub enum BatchOperation {
-    Put {
-        key: String,
-        data: Vec<u8>,
-        prefix: Option<String>,
-    },
-    Delete {
-        key: String,
-    },
-    Get {
-        key: String,
-        response: Sender<Option<Vec<u8>>>,
-    },
-    Flush {
-        response: Sender<()>,
-    },
-}
-
-impl BatchWorker {
-    /// Create a new batch worker
-    pub fn new(store: ConcurrentBlobStore, buffer_size: usize) -> Self {
-        let (sender, receiver) = bounded(buffer_size);
-
-        BatchWorker {
-            sender,
-            receiver,
-            store,
-        }
+    pub fn update(
+        &mut self,
+        key: &str,
+        data: &[u8],
+        prefix: Option<&str>,
+    ) -> Result<(), redb::Error> {
+        self.guard.update(key, data, prefix)
     }
+}
 
-    /// Start the batch worker
-    pub fn start(&self) -> std::thread::JoinHandle<()> {
-        let receiver = self.receiver.clone();
-        let store = self.store.clone();
+/// Thread-safe wrapper for SearchableBlobStore
+#[derive(Clone)]
+pub struct ConcurrentSearchStore {
+    inner: Arc<RwLock<SearchableBlobStore>>,
+}
 
-        std::thread::spawn(move || {
-            let mut batch: Vec<BatchOperation> = Vec::new();
-
-            for op in receiver {
-                match op {
-                    BatchOperation::Put { key, data, prefix } => {
-                        batch.push(BatchOperation::Put { key, data, prefix });
-                        if batch.len() >= 100 {
-                            Self::flush_batch(&store, &mut batch);
-                        }
-                    }
-                    BatchOperation::Delete { key } => {
-                        batch.push(BatchOperation::Delete { key });
-                        if batch.len() >= 100 {
-                            Self::flush_batch(&store, &mut batch);
-                        }
-                    }
-                    BatchOperation::Get { key, response } => {
-                        Self::flush_batch(&store, &mut batch);
-                        let result = store.get(&key).ok().flatten();
-                        let _ = response.send(result);
-                    }
-                    BatchOperation::Flush { response } => {
-                        Self::flush_batch(&store, &mut batch);
-                        let _ = response.send(());
-                    }
-                }
-            }
-
-            // Final flush
-            Self::flush_batch(&store, &mut batch);
+impl ConcurrentSearchStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = SearchableBlobStore::open(path)?;
+        Ok(ConcurrentSearchStore {
+            inner: Arc::new(RwLock::new(store)),
         })
     }
 
-    fn flush_batch(store: &ConcurrentBlobStore, batch: &mut Vec<BatchOperation>) {
-        let mut write_guard = store.inner.write().unwrap();
-
-        for op in batch.drain(..) {
-            match op {
-                BatchOperation::Put { key, data, prefix } => {
-                    let _ = write_guard.put(&key, &data, prefix.as_deref());
-                }
-                BatchOperation::Delete { key } => {
-                    let _ = write_guard.remove(&key);
-                }
-                _ => {}
-            }
+    pub fn read(&self) -> SearchReadGuard<'_> {
+        SearchReadGuard {
+            guard: self.inner.read().unwrap(),
         }
     }
 
-    /// Submit a put operation
-    pub fn put(
-        &self,
-        key: String,
-        data: Vec<u8>,
-        prefix: Option<String>,
-    ) -> Result<(), crossbeam::channel::SendError<BatchOperation>> {
-        self.sender.send(BatchOperation::Put { key, data, prefix })
-    }
-
-    /// Submit a delete operation
-    pub fn delete(&self, key: String) -> Result<(), crossbeam::channel::SendError<BatchOperation>> {
-        self.sender.send(BatchOperation::Delete { key })
-    }
-
-    /// Submit a get operation
-    pub fn get(
-        &self,
-        key: String,
-    ) -> Result<Receiver<Option<Vec<u8>>>, crossbeam::channel::SendError<BatchOperation>> {
-        let (sender, receiver) = bounded(1);
-        self.sender.send(BatchOperation::Get {
-            key,
-            response: sender,
-        })?;
-        Ok(receiver)
-    }
-
-    /// Flush all pending operations
-    pub fn flush(&self) -> Result<(), crossbeam::channel::SendError<BatchOperation>> {
-        let (sender, receiver) = bounded(1);
-        self.sender
-            .send(BatchOperation::Flush { response: sender })?;
-        let _ = receiver.recv();
-        Ok(())
-    }
-}
-
-/// Simple connection pool for concurrent access
-pub struct ConnectionPool {
-    stores: Vec<ConcurrentBlobStore>,
-    current: std::sync::atomic::AtomicUsize,
-}
-
-impl ConnectionPool {
-    /// Create a new connection pool
-    pub fn new<P: AsRef<Path>>(path: P, pool_size: usize) -> Result<Self, redb::Error> {
-        let mut stores = Vec::with_capacity(pool_size);
-        for _ in 0..pool_size {
-            stores.push(ConcurrentBlobStore::open(path.as_ref())?);
+    pub fn write(&self) -> SearchWriteGuard<'_> {
+        SearchWriteGuard {
+            guard: self.inner.write().unwrap(),
         }
+    }
 
-        Ok(ConnectionPool {
-            stores,
-            current: std::sync::atomic::AtomicUsize::new(0),
+    pub fn put_text(&self, key: &str, text: &str, prefix: Option<&str>) -> Result<(), redb::Error> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.put_text(key, text, prefix)
+    }
+
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::search::SearchResult>, redb::Error> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search(query, limit)
+    }
+
+    pub fn fuzzy_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::search::FuzzySearchResult>, redb::Error> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.fuzzy_search(query, limit)
+    }
+
+    pub fn search_phrase(
+        &self,
+        phrase: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::search::SearchResult>, redb::Error> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search_phrase(phrase, limit)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, redb::Error> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.get(key)
+    }
+}
+
+pub struct SearchReadGuard<'a> {
+    guard: RwLockReadGuard<'a, SearchableBlobStore>,
+}
+
+impl<'a> SearchReadGuard<'a> {
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::search::SearchResult>, redb::Error> {
+        self.guard.search(query, limit)
+    }
+
+    pub fn fuzzy_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::search::FuzzySearchResult>, redb::Error> {
+        self.guard.fuzzy_search(query, limit)
+    }
+
+    pub fn search_phrase(
+        &self,
+        phrase: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::search::SearchResult>, redb::Error> {
+        self.guard.search_phrase(phrase, limit)
+    }
+
+    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, redb::Error> {
+        self.guard.get(key)
+    }
+}
+
+pub struct SearchWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, SearchableBlobStore>,
+}
+
+impl<'a> SearchWriteGuard<'a> {
+    pub fn put_text(
+        &mut self,
+        key: &str,
+        text: &str,
+        prefix: Option<&str>,
+    ) -> Result<(), redb::Error> {
+        self.guard.put_text(key, text, prefix)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<bool, redb::Error> {
+        self.guard.remove(key)
+    }
+
+    pub fn reindex(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.reindex()
+    }
+}
+
+/// Thread-safe wrapper for VectorStore
+#[derive(Clone)]
+pub struct ConcurrentVectorStore {
+    inner: Arc<RwLock<VectorStore>>,
+}
+
+impl ConcurrentVectorStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = VectorStore::open(path)?;
+        Ok(ConcurrentVectorStore {
+            inner: Arc::new(RwLock::new(store)),
         })
     }
 
-    /// Get a connection from the pool (round-robin)
-    pub fn get_connection(&self) -> ConcurrentBlobStore {
-        let idx = self
-            .current
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % self.stores.len();
-        self.stores[idx].clone()
+    pub fn read(&self) -> VectorReadGuard<'_> {
+        VectorReadGuard {
+            guard: self.inner.read().unwrap(),
+        }
+    }
+
+    pub fn write(&self) -> VectorWriteGuard<'_> {
+        VectorWriteGuard {
+            guard: self.inner.write().unwrap(),
+        }
+    }
+
+    pub fn insert_text(
+        &self,
+        key: &str,
+        text: &str,
+        prefix: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.insert_text(key, text, prefix)
+    }
+
+    pub fn search_similar(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::vector::VectorSearchResult>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search_similar(query, limit)
+    }
+}
+
+pub struct VectorReadGuard<'a> {
+    guard: RwLockReadGuard<'a, VectorStore>,
+}
+
+impl<'a> VectorReadGuard<'a> {
+    pub fn search_similar(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::vector::VectorSearchResult>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        self.guard.search_similar(query, limit)
+    }
+
+    pub fn get_text(
+        &self,
+        key: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.get_text(key)
+    }
+
+    pub fn statistics(&self) -> crate::vector::VectorStatistics {
+        self.guard.statistics()
+    }
+}
+
+pub struct VectorWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, VectorStore>,
+}
+
+impl<'a> VectorWriteGuard<'a> {
+    pub fn insert_text(
+        &mut self,
+        key: &str,
+        text: &str,
+        prefix: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.insert_text(key, text, prefix)
+    }
+
+    pub fn insert_batch(
+        &mut self,
+        items: Vec<(&str, &str, Option<&str>)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.insert_batch(items)
+    }
+
+    pub fn remove(&mut self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.remove(key)
+    }
+}
+
+/// Thread-safe wrapper for GraphStore
+#[derive(Clone)]
+pub struct ConcurrentGraphStore {
+    inner: Arc<RwLock<GraphStore>>,
+}
+
+impl ConcurrentGraphStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = GraphStore::open(path)?;
+        Ok(ConcurrentGraphStore {
+            inner: Arc::new(RwLock::new(store)),
+        })
+    }
+
+    pub fn read(&self) -> GraphReadGuard<'_> {
+        GraphReadGuard {
+            guard: self.inner.read().unwrap(),
+        }
+    }
+
+    pub fn write(&self) -> GraphWriteGuard<'_> {
+        GraphWriteGuard {
+            guard: self.inner.write().unwrap(),
+        }
+    }
+
+    pub fn save_graph(
+        &self,
+        graph: &crate::graph_store::Graph,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.save_graph(graph)
+    }
+
+    pub fn load_graph(
+        &self,
+        graph_id: &str,
+    ) -> Result<Option<crate::graph_store::Graph>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.load_graph(graph_id)
+    }
+}
+
+pub struct GraphReadGuard<'a> {
+    guard: RwLockReadGuard<'a, GraphStore>,
+}
+
+impl<'a> GraphReadGuard<'a> {
+    pub fn load_graph(
+        &self,
+        graph_id: &str,
+    ) -> Result<Option<crate::graph_store::Graph>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.load_graph(graph_id)
+    }
+
+    pub fn load_node(
+        &self,
+        graph_id: &str,
+        node_id: &str,
+    ) -> Result<Option<crate::graph_store::GraphNode>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        self.guard.load_node(graph_id, node_id)
+    }
+
+    pub fn load_all_nodes(
+        &self,
+        graph_id: &str,
+    ) -> Result<Vec<crate::graph_store::GraphNode>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.load_all_nodes(graph_id)
+    }
+}
+
+pub struct GraphWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, GraphStore>,
+}
+
+impl<'a> GraphWriteGuard<'a> {
+    pub fn save_graph(
+        &mut self,
+        graph: &crate::graph_store::Graph,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.save_graph(graph)
+    }
+
+    pub fn store_node(
+        &mut self,
+        graph_id: &str,
+        node: &crate::graph_store::GraphNode,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.store_node(graph_id, node)
+    }
+
+    pub fn store_edge(
+        &mut self,
+        graph_id: &str,
+        edge: &crate::graph_store::GraphEdge,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.store_edge(graph_id, edge)
+    }
+
+    pub fn delete_graph(
+        &mut self,
+        graph_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.delete_graph(graph_id)
+    }
+}
+
+/// Thread-safe wrapper for FacetedSearchIndex
+#[derive(Clone)]
+pub struct ConcurrentFacetedIndex {
+    inner: Arc<RwLock<FacetedSearchIndex>>,
+}
+
+impl ConcurrentFacetedIndex {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let index = FacetedSearchIndex::new(path)?;
+        Ok(ConcurrentFacetedIndex {
+            inner: Arc::new(RwLock::new(index)),
+        })
+    }
+
+    pub fn read(&self) -> FacetedReadGuard<'_> {
+        FacetedReadGuard {
+            guard: self.inner.read().unwrap(),
+        }
+    }
+
+    pub fn write(&self) -> FacetedWriteGuard<'_> {
+        FacetedWriteGuard {
+            guard: self.inner.write().unwrap(),
+        }
+    }
+
+    pub fn add_document(
+        &self,
+        doc: crate::faceted_search::FacetedDocument,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.add_document(doc)
+    }
+
+    pub fn search(
+        &self,
+        query: &crate::faceted_search::FacetedQuery,
+    ) -> Result<crate::faceted_search::FacetedSearchResult, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search(query)
+    }
+}
+
+pub struct FacetedReadGuard<'a> {
+    guard: RwLockReadGuard<'a, FacetedSearchIndex>,
+}
+
+impl<'a> FacetedReadGuard<'a> {
+    pub fn search(
+        &self,
+        query: &crate::faceted_search::FacetedQuery,
+    ) -> Result<crate::faceted_search::FacetedSearchResult, Box<dyn std::error::Error + Send + Sync>>
+    {
+        self.guard.search(query)
+    }
+}
+
+pub struct FacetedWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, FacetedSearchIndex>,
+}
+
+impl<'a> FacetedWriteGuard<'a> {
+    pub fn add_document(
+        &mut self,
+        doc: crate::faceted_search::FacetedDocument,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.add_document(doc)
+    }
+}
+
+/// Thread-safe wrapper for MultiModalStore
+#[derive(Clone)]
+pub struct ConcurrentMultiModalStore {
+    inner: Arc<RwLock<MultiModalStore>>,
+}
+
+impl ConcurrentMultiModalStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = MultiModalStore::open(path)?;
+        Ok(ConcurrentMultiModalStore {
+            inner: Arc::new(RwLock::new(store)),
+        })
+    }
+
+    pub fn read(&self) -> MultiModalReadGuard<'_> {
+        MultiModalReadGuard {
+            guard: self.inner.read().unwrap(),
+        }
+    }
+
+    pub fn write(&self) -> MultiModalWriteGuard<'_> {
+        MultiModalWriteGuard {
+            guard: self.inner.write().unwrap(),
+        }
+    }
+
+    pub fn insert_text(
+        &self,
+        key: &str,
+        text: &str,
+        prefix: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.insert_text(key, text, prefix)
+    }
+
+    pub fn search_similar(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::multi_modal::MultiModalSearchResult>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search_similar(query, limit)
+    }
+}
+
+pub struct MultiModalReadGuard<'a> {
+    guard: RwLockReadGuard<'a, MultiModalStore>,
+}
+
+impl<'a> MultiModalReadGuard<'a> {
+    pub fn search_similar(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::multi_modal::MultiModalSearchResult>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        self.guard.search_similar(query, limit)
+    }
+
+    pub fn cross_modal_search(
+        &self,
+        query: &str,
+        target_modality: crate::multi_modal::Modality,
+        limit: usize,
+    ) -> Result<
+        Vec<crate::multi_modal::MultiModalSearchResult>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        self.guard.cross_modal_search(query, target_modality, limit)
+    }
+}
+
+pub struct MultiModalWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, MultiModalStore>,
+}
+
+impl<'a> MultiModalWriteGuard<'a> {
+    pub fn insert_text(
+        &mut self,
+        key: &str,
+        text: &str,
+        prefix: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.insert_text(key, text, prefix)
+    }
+
+    pub fn insert_image(
+        &mut self,
+        key: &str,
+        image_data: &[u8],
+        prefix: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.insert_image(key, image_data, prefix)
+    }
+
+    pub fn insert_audio(
+        &mut self,
+        key: &str,
+        audio_data: &[u8],
+        prefix: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.insert_audio(key, audio_data, prefix)
+    }
+}
+
+/// Unified concurrent store that provides access to all storage types
+#[derive(Clone)]
+pub struct UnifiedConcurrentStore {
+    blob: ConcurrentBlobStore,
+    search: ConcurrentSearchStore,
+    vector: ConcurrentVectorStore,
+    graph: ConcurrentGraphStore,
+    faceted: ConcurrentFacetedIndex,
+    multi_modal: ConcurrentMultiModalStore,
+}
+
+impl UnifiedConcurrentStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(UnifiedConcurrentStore {
+            blob: ConcurrentBlobStore::open(path.as_ref())?,
+            search: ConcurrentSearchStore::open(path.as_ref())?,
+            vector: ConcurrentVectorStore::open(path.as_ref())?,
+            graph: ConcurrentGraphStore::open(path.as_ref())?,
+            faceted: ConcurrentFacetedIndex::open(path.as_ref())?,
+            multi_modal: ConcurrentMultiModalStore::open(path.as_ref())?,
+        })
+    }
+
+    pub fn blob(&self) -> &ConcurrentBlobStore {
+        &self.blob
+    }
+
+    pub fn search(&self) -> &ConcurrentSearchStore {
+        &self.search
+    }
+
+    pub fn vector(&self) -> &ConcurrentVectorStore {
+        &self.vector
+    }
+
+    pub fn graph(&self) -> &ConcurrentGraphStore {
+        &self.graph
+    }
+
+    pub fn faceted(&self) -> &ConcurrentFacetedIndex {
+        &self.faceted
+    }
+
+    pub fn multi_modal(&self) -> &ConcurrentMultiModalStore {
+        &self.multi_modal
     }
 }
