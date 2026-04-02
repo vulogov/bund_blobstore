@@ -80,6 +80,15 @@ impl BlobStore {
     /// Create or open a new blob store at the given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, redb::Error> {
         let db = Database::create(path)?;
+
+        // Ensure tables exist by opening them in a write transaction
+        let write_txn = db.begin_write()?;
+        {
+            let _ = write_txn.open_table(BLOBS)?;
+            let _ = write_txn.open_table(METADATA)?;
+        }
+        write_txn.commit()?;
+
         Ok(BlobStore { db })
     }
 
