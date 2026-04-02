@@ -536,6 +536,101 @@ impl SearchableBlobStore {
         }
         result
     }
+
+    /// Phrase search - find exact phrase matches
+    pub fn search_phrase(
+        &self,
+        phrase: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, redb::Error> {
+        let phrase_lower = if self.index.tokenizer_options.case_sensitive {
+            phrase.to_string()
+        } else {
+            phrase.to_lowercase()
+        };
+
+        let results = self.search(&phrase_lower, limit * 2)?;
+        let mut phrase_results = Vec::new();
+
+        for result in results {
+            if let Some(data) = self.get(&result.key)? {
+                if let Ok(text) = String::from_utf8(data) {
+                    let text_lower = if self.index.tokenizer_options.case_sensitive {
+                        text
+                    } else {
+                        text.to_lowercase()
+                    };
+
+                    // Check for exact phrase match
+                    if text_lower.contains(&phrase_lower) {
+                        // Calculate phrase relevance score
+                        let occurrences = text_lower.matches(&phrase_lower).count();
+                        let phrase_score = (occurrences as f64) * 10.0; // Boost phrase matches
+
+                        let mut enhanced_result = result.clone();
+                        enhanced_result.score += phrase_score;
+                        phrase_results.push(enhanced_result);
+                    }
+                }
+            }
+        }
+
+        phrase_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        phrase_results.truncate(limit);
+
+        Ok(phrase_results)
+    }
+
+    /// Proximity search - find words within n words of each other
+    pub fn search_proximity(
+        &self,
+        word1: &str,
+        word2: &str,
+        distance: usize,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, redb::Error> {
+        let results = self.search(&format!("{} {}", word1, word2), limit * 2)?;
+        let mut proximity_results = Vec::new();
+
+        for result in results {
+            if let Some(data) = self.get(&result.key)? {
+                if let Ok(text) = String::from_utf8(data) {
+                    let words: Vec<&str> = text.split_whitespace().collect();
+                    let mut positions1 = Vec::new();
+                    let mut positions2 = Vec::new();
+
+                    for (i, word) in words.iter().enumerate() {
+                        if word.to_lowercase() == word1.to_lowercase() {
+                            positions1.push(i);
+                        }
+                        if word.to_lowercase() == word2.to_lowercase() {
+                            positions2.push(i);
+                        }
+                    }
+
+                    let mut found = false;
+                    for &pos1 in &positions1 {
+                        for &pos2 in &positions2 {
+                            if pos1.abs_diff(pos2) <= distance {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if found {
+                            break;
+                        }
+                    }
+
+                    if found {
+                        proximity_results.push(result.clone());
+                    }
+                }
+            }
+        }
+
+        proximity_results.truncate(limit);
+        Ok(proximity_results)
+    }
 }
 
 /// Search result with highlighted text

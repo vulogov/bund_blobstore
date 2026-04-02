@@ -1,6 +1,6 @@
 [package]
 name = "bund_blobstore"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Basic support for storing compiled BUND bytecode into an external file"
 license-file = "LICENSE"
@@ -23,6 +23,10 @@ ndarray = "0.15"  # For vector operations
 rayon = "1.7"  # For parallel processing
 fastembed = { version = "5.13.0" }
 strsim = "0.11"
+image = "0.24"  # For image processing
+hound = "3.5"   # For audio processing (WAV)
+base64 = "0.21" # For encoding binary data
+regex = "1.10"  # For pattern matching
 
 [dev-dependencies]
 tempfile = "3.0"
