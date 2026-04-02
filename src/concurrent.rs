@@ -3,7 +3,9 @@ use crate::faceted_search::FacetedSearchIndex;
 use crate::graph_store::GraphStore;
 use crate::multi_modal::MultiModalStore;
 use crate::search::SearchableBlobStore;
+use crate::timeline::{AggregatedTelemetry, TelemetryQuery, TelemetryRecord, TelemetryStore};
 use crate::vector::VectorStore;
+use chrono::{DateTime, Utc};
 use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -646,6 +648,197 @@ impl<'a> MultiModalWriteGuard<'a> {
     }
 }
 
+/// Thread-safe wrapper for TelemetryStore
+#[derive(Clone)]
+pub struct ConcurrentTelemetryStore {
+    inner: Arc<RwLock<TelemetryStore>>,
+}
+
+impl ConcurrentTelemetryStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = TelemetryStore::open(path)?;
+        Ok(ConcurrentTelemetryStore {
+            inner: Arc::new(RwLock::new(store)),
+        })
+    }
+
+    pub fn read(&self) -> TelemetryReadGuard<'_> {
+        TelemetryReadGuard {
+            guard: self.inner.read().unwrap(),
+        }
+    }
+
+    pub fn write(&self) -> TelemetryWriteGuard<'_> {
+        TelemetryWriteGuard {
+            guard: self.inner.write().unwrap(),
+        }
+    }
+
+    pub fn store(
+        &self,
+        record: TelemetryRecord,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.store(record)
+    }
+
+    pub fn get_record(
+        &self,
+        id: &str,
+    ) -> Result<Option<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.get_record(id)
+    }
+
+    pub fn query(
+        &self,
+        query: &TelemetryQuery,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.query(query)
+    }
+
+    pub fn query_bucketed(
+        &self,
+        query: &TelemetryQuery,
+    ) -> Result<Vec<AggregatedTelemetry>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.query_bucketed(query)
+    }
+
+    pub fn link_primary_secondary(
+        &self,
+        primary_id: &str,
+        secondary_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.link_primary_secondary(primary_id, secondary_id)
+    }
+
+    pub fn get_secondaries(
+        &self,
+        primary_id: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.get_secondaries(primary_id)
+    }
+
+    pub fn get_primary(
+        &self,
+        secondary_id: &str,
+    ) -> Result<Option<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.get_primary(secondary_id)
+    }
+
+    pub fn search_by_key(
+        &self,
+        key_pattern: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search_by_key(key_pattern)
+    }
+
+    pub fn search_by_source(
+        &self,
+        source: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search_by_source(source)
+    }
+
+    pub fn get_time_range(
+        &self,
+    ) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.get_time_range()
+    }
+}
+
+pub struct TelemetryReadGuard<'a> {
+    guard: RwLockReadGuard<'a, TelemetryStore>,
+}
+
+impl<'a> TelemetryReadGuard<'a> {
+    pub fn get_record(
+        &self,
+        id: &str,
+    ) -> Result<Option<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.get_record(id)
+    }
+
+    pub fn query(
+        &self,
+        query: &TelemetryQuery,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.query(query)
+    }
+
+    pub fn query_bucketed(
+        &self,
+        query: &TelemetryQuery,
+    ) -> Result<Vec<AggregatedTelemetry>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.query_bucketed(query)
+    }
+
+    pub fn get_secondaries(
+        &self,
+        primary_id: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.get_secondaries(primary_id)
+    }
+
+    pub fn get_primary(
+        &self,
+        secondary_id: &str,
+    ) -> Result<Option<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.get_primary(secondary_id)
+    }
+
+    pub fn search_by_key(
+        &self,
+        key_pattern: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.search_by_key(key_pattern)
+    }
+
+    pub fn search_by_source(
+        &self,
+        source: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.search_by_source(source)
+    }
+
+    pub fn get_time_range(
+        &self,
+    ) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        self.guard.get_time_range()
+    }
+}
+
+pub struct TelemetryWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, TelemetryStore>,
+}
+
+impl<'a> TelemetryWriteGuard<'a> {
+    pub fn store(
+        &mut self,
+        record: TelemetryRecord,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.store(record)
+    }
+
+    pub fn link_primary_secondary(
+        &mut self,
+        primary_id: &str,
+        secondary_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.link_primary_secondary(primary_id, secondary_id)
+    }
+}
+
 /// Unified concurrent store that provides access to all storage types
 #[derive(Clone)]
 pub struct UnifiedConcurrentStore {
@@ -655,6 +848,7 @@ pub struct UnifiedConcurrentStore {
     graph: ConcurrentGraphStore,
     faceted: ConcurrentFacetedIndex,
     multi_modal: ConcurrentMultiModalStore,
+    telemetry: ConcurrentTelemetryStore, // Add telemetry
 }
 
 impl UnifiedConcurrentStore {
@@ -666,6 +860,7 @@ impl UnifiedConcurrentStore {
             graph: ConcurrentGraphStore::open(path.as_ref())?,
             faceted: ConcurrentFacetedIndex::open(path.as_ref())?,
             multi_modal: ConcurrentMultiModalStore::open(path.as_ref())?,
+            telemetry: ConcurrentTelemetryStore::open(path.as_ref())?,
         })
     }
 
@@ -691,5 +886,10 @@ impl UnifiedConcurrentStore {
 
     pub fn multi_modal(&self) -> &ConcurrentMultiModalStore {
         &self.multi_modal
+    }
+
+    pub fn telemetry(&self) -> &ConcurrentTelemetryStore {
+        // Add telemetry getter
+        &self.telemetry
     }
 }

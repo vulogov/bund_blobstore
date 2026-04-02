@@ -1,4 +1,3 @@
-```markdown
 # Bund BlobStore
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org)
@@ -6,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/bund_blobstore.svg)](https://crates.io/crates/bund_blobstore)
 [![Documentation](https://docs.rs/bund_blobstore/badge.svg)](https://docs.rs/bund_blobstore)
 
-A high-performance, ACID-compliant embedded database with enterprise-grade search capabilities including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, and concurrent access patterns.
+A high-performance, ACID-compliant embedded database with enterprise-grade search capabilities including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, and concurrent access patterns.
 
 ## ✨ Features
 
@@ -28,6 +27,15 @@ A high-performance, ACID-compliant embedded database with enterprise-grade searc
 - **🔤 Phrase Matching** - Exact phrase search with proximity scoring
 - **📏 Proximity Search** - Find words within N words of each other
 - **⚙️ Customizable Tokenizer** - Configurable stop words, stemming, case sensitivity
+
+### Telemetry & Timeline
+- **📈 Time Series Data** - Store telemetry events with timestamps
+- **🏷️ Mixed Value Types** - Float, int, string, bool, blob, JSON, and dynamic values
+- **🔗 Primary-Secondary Relationships** - Hierarchical telemetry records with linking
+- **⏱️ Time Interval Search** - Query by last hour, day, week, month, or custom ranges
+- **📊 Minute-Grade Bucketing** - Aggregate data by minute intervals with statistics
+- **🎯 Key & Source Search** - Filter by metric keys and data sources
+- **📐 Time Range Analysis** - Get min/max timestamps in the store
 
 ### Advanced Fuzzy Algorithms
 - **Levenshtein Distance** - Edit distance for typo tolerance
@@ -56,10 +64,11 @@ A high-performance, ACID-compliant embedded database with enterprise-grade searc
 - **🔄 Format Flexibility** - Choose the best format for your use case
 
 ### Concurrent Operations
-- **🔄 Thread-Safe** - Safe concurrent access with read/write locks
+- **🔄 Thread-Safe** - Safe concurrent access with read/write locks for all storage types
 - **📦 Batch Processing** - Efficient batch operations with background worker
 - **🔌 Connection Pooling** - Round-robin connection pool for high concurrency
 - **⚡ High Throughput** - Optimized for concurrent workloads
+- **🎯 Unified Store** - Single interface for all storage types
 
 ## 📦 Installation
 
@@ -67,7 +76,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bund_blobstore = "0.5.0"
+bund_blobstore = "0.6.0"
 ```
 
 ## 🚀 Quick Start
@@ -80,15 +89,12 @@ use bund_blobstore::BlobStore;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut store = BlobStore::open("my_data.redb")?;
     
-    // Store data with optional prefix
     store.put("user:100", b"Alice data", Some("user"))?;
     
-    // Retrieve data
     if let Some(data) = store.get("user:100")? {
         println!("Retrieved: {}", String::from_utf8_lossy(&data));
     }
     
-    // Verify integrity
     assert!(store.verify_integrity("user:100")?);
     
     Ok(())
@@ -105,47 +111,17 @@ use bund_blobstore::SearchableBlobStore;
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut store = SearchableBlobStore::open("searchable.redb")?;
     
-    // Store documents (automatically indexed)
     store.put_text("doc1", "The quick brown fox jumps over the lazy dog", None)?;
     store.put_text("doc2", "A quick brown dog jumps over the lazy fox", None)?;
     
-    // Search with relevance scoring
     let results = store.search("quick brown", 10)?;
     for result in results {
         println!("Found: {} (score: {:.3})", result.key, result.score);
     }
     
-    // Search with highlighting
     let highlighted = store.search_with_highlight("fox", 10)?;
     for result in highlighted {
         println!("{}", result.highlighted_text);
-    }
-    
-    Ok(())
-}
-```
-
-### Phrase and Proximity Search
-
-```rust
-use bund_blobstore::SearchableBlobStore;
-
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut store = SearchableBlobStore::open("phrase.redb")?;
-    
-    store.put_text("doc1", "The quick brown fox jumps over the lazy dog", None)?;
-    store.put_text("doc2", "A quick brown dog jumps over the lazy fox", None)?;
-    
-    // Exact phrase matching
-    let results = store.search_phrase("quick brown fox", 10)?;
-    for result in results {
-        println!("Phrase match: {} (score: {:.3})", result.key, result.score);
-    }
-    
-    // Proximity search - find "quick" and "fox" within 5 words
-    let results = store.search_proximity("quick", "fox", 5, 10)?;
-    for result in results {
-        println!("Proximity match: {}", result.key);
     }
     
     Ok(())
@@ -161,7 +137,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut store = SearchableBlobStore::open("fuzzy.redb")?;
     
     store.put_text("doc1", "The quick brown fox jumps over the lazy dog", None)?;
-    store.put_text("doc2", "Rust programming language is amazing", None)?;
     
     // Default fuzzy search (Levenshtein distance)
     let results = store.fuzzy_search("quikc", 5)?;
@@ -170,24 +145,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                  result.key, result.distance, result.score);
     }
     
-    // Custom fuzzy configuration
-    let config = FuzzyConfig {
-        max_distance: 2,
-        max_edits: 2,
-        prefix_length: 3,
-        use_damerau: true,  // Allow transpositions
-    };
-    
-    let results = store.fuzzy_search_with_config("proramming", &config, 5)?;
-    
-    // Jaro-Winkler for short strings (names, IDs)
+    // Jaro-Winkler for short strings
     let jw = JaroWinkler::default();
     let similarity = jw.similarity("hello", "helo");
     println!("Jaro-Winkler similarity: {}", similarity);
-    
-    // Sørensen-Dice for longer text
-    let dice = SorensenDice::similarity("rust programming", "rust programing");
-    println!("Sørensen-Dice similarity: {}", dice);
     
     Ok(())
 }
@@ -201,26 +162,13 @@ use bund_blobstore::VectorStore;
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut store = VectorStore::open("vectors.redb")?;
     
-    // Store documents with automatic vector embeddings
     store.insert_text("doc1", "Rust is a systems programming language", None)?;
     store.insert_text("doc2", "Python excels at data science and ML", None)?;
-    store.insert_text("doc3", "JavaScript runs in web browsers", None)?;
     
-    // Semantic search (finds conceptually similar documents)
     let results = store.search_similar("fast system programming", 3)?;
     for result in results {
         println!("Found: {} (similarity: {:.3})", result.key, result.score);
-        if let Some(text) = store.get_text(&result.key)? {
-            println!("  Content: {}", text);
-        }
     }
-    
-    // Batch insertion for better performance
-    let documents = vec![
-        ("doc4", "Go is good for concurrency", Some("programming")),
-        ("doc5", "C++ offers high performance", Some("programming")),
-    ];
-    store.insert_batch(documents)?;
     
     Ok(())
 }
@@ -234,21 +182,16 @@ use bund_blobstore::HybridSearch;
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut hybrid = HybridSearch::new("hybrid.redb")?;
     
-    // Insert documents
-    hybrid.insert_text("doc1", "rust programming language systems programming", None)?;
+    hybrid.insert_text("doc1", "rust programming language systems", None)?;
     hybrid.insert_text("doc2", "python data science machine learning", None)?;
-    hybrid.insert_text("doc3", "rust is blazingly fast and memory safe", None)?;
     
-    // Hybrid search with vector weight (0.7) and keyword weight (0.3)
+    // 70% vector, 30% keyword
     let results = hybrid.search("rust fast", 10, 0.7)?;
     for result in results {
         println!("Document: {}", result.key);
         println!("  Vector score: {:.3}", result.vector_score);
         println!("  Keyword score: {:.3}", result.keyword_score);
         println!("  Combined: {:.3}", result.combined_score);
-        if let Some(preview) = result.text_preview {
-            println!("  Preview: {}", preview);
-        }
     }
     
     Ok(())
@@ -264,7 +207,6 @@ use std::collections::{HashMap, HashSet};
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut index = FacetedSearchIndex::new("faceted.redb")?;
     
-    // Add documents with facets
     let doc = FacetedDocument {
         key: "product_1".to_string(),
         facets: {
@@ -283,7 +225,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     index.add_document(doc)?;
     
-    // Faceted search query
     let mut query = FacetedQuery::default();
     query.text_query = Some("iphone".to_string());
     query.facets.insert("brand".to_string(), {
@@ -291,31 +232,80 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         set.insert("apple".to_string());
         set
     });
-    query.range_filters.insert("price".to_string(), (500.0, 1500.0));
-    query.limit = 20;
     
     let results = index.search(&query)?;
     println!("Total results: {}", results.total);
-    for doc in results.documents {
-        println!("Document: {}", doc.key);
-        for (facet, value) in doc.facets {
-            println!("  {}: {}", facet, value);
-        }
+    
+    Ok(())
+}
+```
+
+## 📊 Telemetry & Timeline
+
+### Store Telemetry Data
+
+```rust
+use bund_blobstore::{TelemetryStore, TelemetryRecord, TelemetryValue, TelemetryQuery, TimeInterval};
+use chrono::Utc;
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut telemetry = TelemetryStore::open("telemetry.redb")?;
+    
+    // Store primary record
+    let primary = TelemetryRecord::new_primary(
+        "cpu_001".to_string(),
+        Utc::now(),
+        "cpu_usage".to_string(),
+        "server_01".to_string(),
+        TelemetryValue::Float(45.2),
+    ).with_metadata("unit", "%");
+    telemetry.store(primary)?;
+    
+    // Store secondary record with JSON data
+    let secondary = TelemetryRecord::new_secondary(
+        "cpu_001_detail".to_string(),
+        Utc::now(),
+        "core_usage".to_string(),
+        "server_01".to_string(),
+        TelemetryValue::Json(serde_json::json!({
+            "core_0": 45.0,
+            "core_1": 52.0,
+            "core_2": 38.0,
+            "core_3": 41.0
+        })),
+        "cpu_001".to_string(),
+    );
+    telemetry.store(secondary)?;
+    
+    // Link records
+    telemetry.link_primary_secondary("cpu_001", "cpu_001_detail")?;
+    
+    // Query last hour of data
+    let query = TelemetryQuery {
+        time_interval: Some(TimeInterval::last_hour()),
+        keys: Some(vec!["cpu_usage".to_string()]),
+        sources: Some(vec!["server_01".to_string()]),
+        limit: 100,
+        ..Default::default()
+    };
+    
+    let results = telemetry.query(&query)?;
+    for record in results {
+        println!("[{}] {}: {:?}", record.timestamp(), record.key, record.value);
     }
     
-    // Display facet counts for filtering
-    for facet in results.facets {
-        println!("Facet: {}", facet.name);
-        for value in facet.values {
-            println!("  {} ({})", value.value, value.count);
-        }
+    // Get minute-grade bucketed results
+    let bucketed = telemetry.query_bucketed(&query)?;
+    for bucket in bucketed {
+        println!("Bucket: {:?}, Avg: {:?}, Count: {}", 
+                 bucket.bucket, bucket.avg_value, bucket.count);
     }
     
     Ok(())
 }
 ```
 
-### Multi-Modal Search (Text, Images, Audio)
+### Multi-Modal Search
 
 ```rust
 use bund_blobstore::{MultiModalStore, Modality};
@@ -323,30 +313,17 @@ use bund_blobstore::{MultiModalStore, Modality};
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut store = MultiModalStore::open("multimodal.redb")?;
     
-    // Store different modalities
     store.insert_text("doc1", "A beautiful sunset over mountains", None)?;
-    store.insert_text("doc2", "Ocean waves crashing on shore", None)?;
     
-    // For images, you would load actual image data
-    let image_data = std::fs::read("sunset.jpg")?;
-    store.insert_image("img1", &image_data, None)?;
-    
-    // For audio, you would load actual audio data
-    let audio_data = std::fs::read("waves.wav")?;
-    store.insert_audio("audio1", &audio_data, None)?;
-    
-    // Search across all modalities with text
+    // Search across all modalities
     let results = store.search_similar("sunset landscape", 5)?;
     for result in results {
         println!("Found: {} (modality: {:?}, score: {:.3})", 
                  result.key, result.modality, result.score);
     }
     
-    // Cross-modal search (find images matching text description)
+    // Cross-modal search (find images matching text)
     let images = store.cross_modal_search("mountain view", Modality::Image, 5)?;
-    for image in images {
-        println!("Matching image: {} (score: {:.3})", image.key, image.score);
-    }
     
     Ok(())
 }
@@ -361,18 +338,6 @@ use std::collections::HashMap;
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut graph_store = GraphStore::open("graphs.redb")?;
     
-    // Create a graph
-    let mut graph = Graph {
-        id: "telemetry_001".to_string(),
-        name: "Service Dependencies".to_string(),
-        nodes: HashMap::new(),
-        edges: vec![],
-        metadata: HashMap::new(),
-        created_at: 1234567890,
-        updated_at: 1234567890,
-    };
-    
-    // Add nodes
     let node = GraphNode {
         id: "auth_service".to_string(),
         node_type: "service".to_string(),
@@ -381,7 +346,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     graph_store.store_node("telemetry_001", &node)?;
     
-    // Add edge
     let edge = GraphEdge {
         from: "auth_service".to_string(),
         to: "api_service".to_string(),
@@ -392,123 +356,51 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
     graph_store.store_edge("telemetry_001", &edge)?;
     
-    // Save complete graph
-    graph_store.save_graph(&graph)?;
-    
-    // Query graphs
-    let options = GraphQueryOptions {
-        graph_id: Some("telemetry_001".to_string()),
-        node_type: Some("service".to_string()),
-        ..Default::default()
-    };
-    
-    let graphs = graph_store.query_graphs(options)?;
-    for graph in graphs {
-        println!("Found graph: {}", graph.name);
-    }
-    
     Ok(())
 }
 ```
 
-### Concurrent Access with Batch Processing
+### Concurrent Access with Unified Store
 
 ```rust
-use bund_blobstore::{ConcurrentBlobStore, BatchWorker, ConnectionPool};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Concurrent store with thread-safe operations
-    let store = ConcurrentBlobStore::open("concurrent.redb")?;
-    
-    // Batch worker for high throughput
-    let worker = BatchWorker::new(store, 100);
-    let handle = worker.start();
-    
-    // Submit thousands of operations efficiently
-    for i in 0..10000 {
-        worker.put(
-            format!("key_{}", i),
-            format!("value_{}", i).into_bytes(),
-            None,
-        )?;
-    }
-    
-    worker.flush()?;
-    
-    // Connection pool for load balancing
-    let pool = ConnectionPool::new("pooled.redb", 5)?;
-    let conn = pool.get_connection();
-    conn.put("load_balanced", b"data", None)?;
-    
-    handle.join().unwrap();
-    Ok(())
-}
-```
-
-### Advanced Querying with Patterns
-
-```rust
-use bund_blobstore::{BlobStore, QueryOptions};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut store = BlobStore::open("query.redb")?;
-    
-    // Store sample data
-    store.put("log_2024_01", b"January logs", Some("log"))?;
-    store.put("log_2024_02", b"February logs", Some("log"))?;
-    store.put("log_2023_12", b"December 2023 logs", Some("log"))?;
-    
-    // Query with pattern matching and pagination
-    let options = QueryOptions {
-        prefix: Some("log".to_string()),
-        pattern: Some("*2024*".to_string()),  // Wildcard pattern
-        limit: Some(10),
-        offset: Some(0),
-    };
-    
-    let results = store.query(options)?;
-    for (key, metadata) in results {
-        println!("Key: {}, Size: {}, Created: {}", 
-                 key, metadata.size, metadata.created_at);
-    }
-    
-    Ok(())
-}
-```
-
-### Serialization with Compression
-
-```rust
-use bund_blobstore::{SerializationHelper, SerializationFormat};
-use serde::{Serialize, Deserialize};
-
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-struct TelemetryData {
-    id: u32,
-    timestamp: u64,
-    values: Vec<f64>,
-}
+use bund_blobstore::{UnifiedConcurrentStore, TelemetryRecord, TelemetryValue, BatchWorker};
+use chrono::Utc;
+use std::thread;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let data = TelemetryData {
-        id: 42,
-        timestamp: 1234567890,
-        values: vec![1.0, 2.0, 3.0, 4.0, 5.0],
-    };
+    let store = UnifiedConcurrentStore::open("unified.redb")?;
     
-    // Serialize with compression
-    let compressed = SerializationHelper::serialize_compressed(
-        &data, 
-        SerializationFormat::Bincode
-    )?;
-    println!("Compressed size: {} bytes", compressed.len());
+    // Thread-safe operations across all storage types
+    let store1 = store.clone();
+    let handle1 = thread::spawn(move || {
+        store1.blob().put("key", b"value", None).unwrap();
+        store1.telemetry().store(
+            TelemetryRecord::new_primary(
+                "id".to_string(),
+                Utc::now(),
+                "metric".to_string(),
+                "source".to_string(),
+                TelemetryValue::Float(42.0),
+            )
+        ).unwrap();
+    });
     
-    // Deserialize
-    let recovered: TelemetryData = SerializationHelper::deserialize_compressed(
-        &compressed, 
-        SerializationFormat::Bincode
-    )?;
-    assert_eq!(data, recovered);
+    let store2 = store.clone();
+    let handle2 = thread::spawn(move || {
+        let results = store2.search().search("query", 10).unwrap();
+        println!("Found {} results", results.len());
+    });
+    
+    handle1.join().unwrap();
+    handle2.join().unwrap();
+    
+    // Batch processing for high throughput
+    let worker = BatchWorker::new(store.blob().clone(), 100);
+    let handle = worker.start();
+    for i in 0..1000 {
+        worker.put(format!("key_{}", i), format!("value_{}", i).into_bytes(), None)?;
+    }
+    worker.flush()?;
     
     Ok(())
 }
@@ -521,13 +413,16 @@ bund_blobstore/
 ├── blobstore.rs       # Core key-value store with metadata & integrity
 ├── search.rs          # Full-text & fuzzy search with multiple algorithms
 ├── vector.rs          # Vector embeddings & semantic similarity
+├── timeline.rs        # Telemetry timeline with time-series data
 ├── graph_store.rs     # Graph-specific operations & indexing
+├── faceted_search.rs  # Faceted search with filtering
+├── multi_modal.rs     # Multi-modal embeddings (text, image, audio)
+├── fuzzy_algorithms.rs # Advanced fuzzy matching
 ├── serialization.rs   # Multiple formats with compression
-├── concurrent.rs      # Thread-safe wrappers & connection pooling
-├── fuzzy_algorithms.rs # Advanced fuzzy matching (Jaro-Winkler, Sørensen-Dice)
-├── faceted_search.rs   # Faceted search with filtering
-├── multi_modal.rs      # Multi-modal embeddings (text, image, audio)
-└── lib.rs             # Module exports
+├── concurrent.rs      # Thread-safe wrappers & unified store
+├── batch.rs          # Batch processing operations
+├── pool.rs           # Connection pooling
+└── lib.rs            # Module exports
 ```
 
 ## 📊 Performance Benchmarks
@@ -539,7 +434,7 @@ bund_blobstore/
 - **Vector search**: <50ms for 10K vectors
 - **Hybrid search**: <100ms combining both methods
 - **Faceted search**: <20ms with 5 facets
-- **Multi-modal search**: <200ms cross-modal
+- **Telemetry query**: <10ms for time-range queries
 - **Batch processing**: Up to 100,000 ops/second
 - **Index size**: ~20% of original text size
 
@@ -553,7 +448,6 @@ use std::collections::HashSet;
 
 let mut stop_words = HashSet::new();
 stop_words.insert("the".to_string());
-stop_words.insert("and".to_string());
 
 let options = TokenizerOptions {
     min_token_length: 3,
@@ -572,10 +466,10 @@ let store = SearchableBlobStore::open_with_options("search.redb", options)?;
 use bund_blobstore::FuzzyConfig;
 
 let config = FuzzyConfig {
-    max_distance: 2,           // Maximum edit distance
-    max_edits: 2,              // Maximum number of edits
-    prefix_length: 3,          // Minimum prefix length to match
-    use_damerau: true,         // Allow transpositions
+    max_distance: 2,
+    max_edits: 2,
+    prefix_length: 3,
+    use_damerau: true,
 };
 ```
 
@@ -586,33 +480,13 @@ use bund_blobstore::{VectorStore, VectorConfig};
 use fastembed::EmbeddingModel;
 
 let config = VectorConfig {
-    model: EmbeddingModel::AllMiniLML6V2,  // 384-dim embeddings
-    batch_size: 32,                        // Process 32 texts at once
-    cache_size: 1000,                      // Cache up to 1000 vectors
-    normalize_embeddings: true,            // Normalize for cosine similarity
+    model: EmbeddingModel::AllMiniLML6V2,
+    batch_size: 32,
+    cache_size: 1000,
+    normalize_embeddings: true,
 };
 
 let store = VectorStore::open_with_config("vectors.redb", config)?;
-```
-
-### Hybrid Search Weight Tuning
-
-```rust
-// Adjust vector_weight to balance between semantic and keyword search
-// 1.0 = pure vector search, 0.0 = pure keyword search
-let vector_weight = 0.7;  // 70% vector, 30% keyword
-
-let results = hybrid.search("query", 10, vector_weight)?;
-```
-
-### Jaro-Winkler Custom Configuration
-
-```rust
-use bund_blobstore::JaroWinkler;
-
-// Custom prefix scale and length
-let jw = JaroWinkler::new(0.15, 5);
-let similarity = jw.similarity("hello", "helo");
 ```
 
 ## 🧪 Testing
@@ -623,13 +497,10 @@ cargo test
 
 # Run specific test suites
 cargo test test_fuzzy_search
+cargo test test_telemetry_store
 cargo test test_vector_embedding
-cargo test test_full_text_search
 cargo test test_hybrid_search
-cargo test test_graph_store
 cargo test test_faceted_search
-cargo test test_multi_modal_store
-cargo test test_phrase_search
 
 # Run with logging
 RUST_LOG=debug cargo test
@@ -637,86 +508,29 @@ RUST_LOG=debug cargo test
 
 ## 📈 Use Cases
 
+### Telemetry & Monitoring
+- **System Metrics**: CPU, memory, disk usage over time
+- **Application Performance**: Response times, error rates
+- **IoT Data**: Sensor readings with timestamps
+- **Business Metrics**: Sales, users, conversions
+- **Time-Series Analysis**: Trend detection and forecasting
+
 ### Search & Discovery
-- **Semantic Search Engines**: Find content by meaning, not just keywords
+- **Semantic Search**: Find content by meaning, not just keywords
 - **RAG Applications**: Vector search for retrieval-augmented generation
-- **E-commerce Search**: Faceted product search with typo tolerance
+- **E-commerce**: Faceted product search with typo tolerance
 - **Document Management**: Full-text search with faceted filtering
 - **Code Search**: Fuzzy and semantic search across codebases
-- **Chatbots**: Hybrid search for accurate response retrieval
 
 ### Multi-Modal Applications
 - **Image Search**: Find images by text description
 - **Video Analytics**: Cross-modal search across frames and audio
 - **Media Libraries**: Search across images, audio, and text
-- **Accessibility**: Generate alt-text from image embeddings
 
 ### Data Storage
-- **Telemetry Storage**: Store metrics, logs, and traces with relationships
-- **IoT Data**: Edge device data collection with integrity checks
+- **Configuration Management**: Hierarchical configuration data
 - **Audit Logs**: Immutable audit trails with checksums
-- **Configuration Management**: Store hierarchical configuration data
-
-### Advanced Applications
-- **Recommendation Systems**: Find similar items using vector similarity
 - **Knowledge Graphs**: Graph relationships with faceted search
-- **Medical Records**: Fuzzy search for patient names and IDs
-- **Legal Documents**: Faceted search for case law
-- **Customer Support**: Typo-tolerant knowledge base search
-
-## 🔬 Advanced Features
-
-### Integrity Verification
-
-```rust
-// Automatically verify data integrity with checksums
-assert!(store.verify_integrity("critical_data")?);
-```
-
-### Batch Operations
-
-```rust
-// Bulk insert with automatic indexing
-let items = vec![
-    ("doc1", "Content 1", Some("prefix1")),
-    ("doc2", "Content 2", Some("prefix2")),
-];
-store.insert_batch(items)?;
-```
-
-### Index Statistics
-
-```rust
-let stats = store.index_stats();
-println!("Total terms: {}", stats.total_terms);
-println!("Unique terms: {}", stats.unique_terms);
-println!("Document references: {}", stats.total_document_references);
-```
-
-### Custom Tokenization
-
-```rust
-let tokens = store.tokenize_text("Custom text processing");
-for token in tokens {
-    println!("Token: {}", token);
-}
-```
-
-### Trie-Based Fuzzy Search
-
-```rust
-use bund_blobstore::FuzzyTrie;
-
-let mut trie = FuzzyTrie::new();
-trie.insert("quick");
-trie.insert("quack");
-trie.insert("quicker");
-
-let results = trie.search("quikc", 2);
-for (term, distance) in results {
-    println!("Found: {} (distance: {})", term, distance);
-}
-```
 
 ## 🤝 Contributing
 
@@ -731,14 +545,6 @@ cargo build
 cargo test
 ```
 
-### Guidelines
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
 ## 📄 License
 
 This project is licensed under either of:
@@ -746,21 +552,13 @@ This project is licensed under either of:
 - Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)
 - MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
-at your option.
-
 ## 🙏 Acknowledgments
 
 - [RedB](https://github.com/cberner/redb) - Embedded database backend
 - [fastembed](https://github.com/Anush008/fastembed-rs) - Vector embeddings
 - [strsim](https://github.com/dguo/strsim-rs) - String similarity algorithms
+- [chrono](https://github.com/chronotope/chrono) - Time handling
 - [Serde](https://serde.rs/) - Serialization framework
-- [Rayon](https://github.com/rayon-rs/rayon) - Parallel processing
-- [image](https://github.com/image-rs/image) - Image processing
-- [parking_lot](https://github.com/Amanieu/parking_lot) - Efficient synchronization
-
-## 📚 Documentation
-
-For more detailed documentation, visit [docs.rs/bund_blobstore](https://docs.rs/bund_blobstore)
 
 ## 🚀 Roadmap
 
@@ -768,16 +566,11 @@ For more detailed documentation, visit [docs.rs/bund_blobstore](https://docs.rs/
 - [ ] Encryption at rest
 - [ ] Incremental backups
 - [ ] TTL (Time-To-Live) for keys
-- [ ] More fuzzy algorithms (Needleman-Wunsch, Smith-Waterman)
-- [ ] Faceted search with range histograms
-- [ ] Multi-modal embeddings for video
+- [ ] Real-time index updates
 - [ ] Distributed deployment
 - [ ] WebAssembly support
 - [ ] Geographic search (spatial indexes)
-- [ ] Real-time index updates
-- [ ] Custom scoring functions
 
 ---
 
 **Built with ❤️ using Rust**
-```

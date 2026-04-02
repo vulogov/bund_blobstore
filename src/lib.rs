@@ -31,11 +31,28 @@ pub use vector::{
 
 // Re-export concurrent types
 pub use concurrent::{
-    BlobReadGuard, BlobWriteGuard, ConcurrentBlobStore, ConcurrentFacetedIndex,
-    ConcurrentGraphStore, ConcurrentMultiModalStore, ConcurrentSearchStore, ConcurrentVectorStore,
-    FacetedReadGuard, FacetedWriteGuard, GraphReadGuard, GraphWriteGuard, MultiModalReadGuard,
-    MultiModalWriteGuard, SearchReadGuard, SearchWriteGuard, UnifiedConcurrentStore,
-    VectorReadGuard, VectorWriteGuard,
+    BlobReadGuard,
+    BlobWriteGuard,
+    ConcurrentBlobStore,
+    ConcurrentFacetedIndex,
+    ConcurrentGraphStore,
+    ConcurrentMultiModalStore,
+    ConcurrentSearchStore,
+    ConcurrentTelemetryStore,
+    ConcurrentVectorStore,
+    FacetedReadGuard,
+    FacetedWriteGuard,
+    GraphReadGuard,
+    GraphWriteGuard,
+    MultiModalReadGuard,
+    MultiModalWriteGuard,
+    SearchReadGuard,
+    SearchWriteGuard,
+    TelemetryReadGuard,
+    TelemetryWriteGuard, // Add telemetry guards
+    UnifiedConcurrentStore,
+    VectorReadGuard,
+    VectorWriteGuard,
 };
 
 pub use batch::{BatchOperation, BatchWorker};
