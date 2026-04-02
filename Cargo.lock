@@ -135,6 +135,7 @@ dependencies = [
  "log",
  "redb",
  "rust_dynamic",
+ "serde",
  "tempfile",
 ]
 
