@@ -68,3 +68,7 @@ pub use distributed_graph::{
 };
 
 pub use graph_algorithms::{CycleDetectionResult, GraphAlgorithms, LongestPathResult};
+
+pub fn version() -> String {
+    env!("CARGO_PKG_VERSION").to_string().clone()
+}
