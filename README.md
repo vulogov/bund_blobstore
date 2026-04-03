@@ -5,14 +5,14 @@
 [![Crates.io](https://img.shields.io/crates/v/bund_blobstore.svg)](https://crates.io/crates/bund_blobstore)
 [![Documentation](https://docs.rs/bund_blobstore/badge.svg)](https://docs.rs/bund_blobstore)
 
-A high-performance, ACID-compliant embedded database with enterprise-grade features including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, distributed sharding, intelligent caching, and concurrent access patterns.
+A high-performance, ACID-compliant embedded database with enterprise-grade features including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, vector-telemetry integration, distributed sharding, intelligent caching, and concurrent access patterns.
 
 ## ✨ Features
 
 ### Core Database
 - **⚡ Blazing Fast** - Built on [RedB](https://github.com/cberner/redb), one of the fastest embedded databases for Rust
 - **🔐 ACID Compliant** - Full transaction support with MVCC
-- **📦 Single File** - Everything stored in a single `.redb` file per shard
+- **📦 Single File** - Everything stored in a single `.redb` file per component
 - **📊 Metadata Tracking** - Automatic timestamps, sizes, and checksums for data integrity
 - **🔍 Advanced Querying** - Prefix search, wildcard patterns, pagination
 - **🛡️ Integrity Verification** - Automatic checksum validation for data integrity
@@ -36,6 +36,15 @@ A high-performance, ACID-compliant embedded database with enterprise-grade featu
 - **📊 Minute-Grade Bucketing** - Aggregate data by minute intervals with statistics
 - **🎯 Key & Source Search** - Filter by metric keys and data sources
 - **📐 Time Range Analysis** - Get min/max timestamps in the store
+
+### Vector-Telemetry Integration (NEW!)
+- **🔗 Time-Vector Search** - Combine temporal proximity with semantic similarity
+- **📊 Configurable Weights** - Balance between time relevance and semantic relevance
+- **🎯 Similar Event Discovery** - Find events similar to a reference event within time windows
+- **📈 Temporal Pattern Analysis** - Identify when similar events occur over time
+- **🤖 Automatic Embedding Generation** - Convert telemetry values to vector embeddings
+- **💾 Embedding Caching** - Cache embeddings for performance
+- **⏰ Time-Indexed Vectors** - Bucket embeddings by time for efficient queries
 
 ### Distributed Sharding
 - **🎯 Multiple Sharding Strategies** - Key hash, time range, key prefix, consistent hashing
@@ -144,32 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 ```
 
-### Fuzzy Search
-
-```rust
-use bund_blobstore::{SearchableBlobStore, FuzzyConfig, JaroWinkler};
-
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut store = SearchableBlobStore::open("fuzzy.redb")?;
-    
-    store.put_text("doc1", "The quick brown fox jumps over the lazy dog", None)?;
-    
-    // Default fuzzy search
-    let results = store.fuzzy_search("quikc", 5)?;
-    for result in results {
-        println!("Found: {} (distance: {})", result.key, result.distance);
-    }
-    
-    // Jaro-Winkler for short strings
-    let jw = JaroWinkler::default();
-    let similarity = jw.similarity("hello", "helo");
-    println!("Similarity: {}", similarity);
-    
-    Ok(())
-}
-```
-
-### Vector Similarity Search
+### Vector Search
 
 ```rust
 use bund_blobstore::VectorStore;
@@ -183,30 +167,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let results = store.search_similar("fast system programming", 3)?;
     for result in results {
         println!("Found: {} (similarity: {:.3})", result.key, result.score);
-    }
-    
-    Ok(())
-}
-```
-
-### Hybrid Search
-
-```rust
-use bund_blobstore::HybridSearch;
-
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut hybrid = HybridSearch::new("hybrid.redb")?;
-    
-    hybrid.insert_text("doc1", "rust programming language systems", None)?;
-    hybrid.insert_text("doc2", "python data science machine learning", None)?;
-    
-    // 70% vector, 30% keyword
-    let results = hybrid.search("rust fast", 10, 0.7)?;
-    for result in results {
-        println!("Document: {}", result.key);
-        println!("  Vector score: {:.3}", result.vector_score);
-        println!("  Keyword score: {:.3}", result.keyword_score);
-        println!("  Combined: {:.3}", result.combined_score);
     }
     
     Ok(())
@@ -251,6 +211,73 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 ```
 
+## 🔗 Vector-Telemetry Integration (NEW!)
+
+### Time-Vector Search
+
+```rust
+use bund_blobstore::{VectorTelemetryStore, TelemetryRecord, TelemetryValue, VectorTimeQuery, TimeInterval};
+use chrono::Utc;
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut store = VectorTelemetryStore::open("vector_telemetry.redb")?;
+    
+    // Store telemetry with automatic vector embedding
+    let record = TelemetryRecord::new_primary(
+        "incident_001".to_string(),
+        Utc::now(),
+        "system_error".to_string(),
+        "api_server".to_string(),
+        TelemetryValue::String("Database connection timeout after 30 seconds".to_string()),
+    );
+    store.store_with_vector(record, true)?;
+    
+    // Search with time range and semantic similarity
+    let query = VectorTimeQuery {
+        time_interval: Some(TimeInterval::last_hour()),
+        vector_query: Some("database connection problem".to_string()),
+        vector_weight: 0.7,  // 70% semantic, 30% temporal
+        time_weight: 0.3,
+        limit: 10,
+        min_similarity: 0.3,
+        ..Default::default()
+    };
+    
+    let results = store.search_vector_time(&query)?;
+    for result in results {
+        println!("Found: {}", result.record.key);
+        println!("  Time score: {:.3}, Vector score: {:.3}", 
+                 result.time_score, result.vector_score);
+        println!("  Combined: {:.3}", result.combined_score);
+    }
+    
+    Ok(())
+}
+```
+
+### Find Similar Events in Time Window
+
+```rust
+// Find events similar to incident_001 within 2 hours
+let similar = store.find_similar_events("incident_001", 2, 10)?;
+for event in similar {
+    println!("Similar event: {} at {}", 
+             event.record.key, event.record.timestamp());
+    println!("  Similarity: {:.3}", event.similarity);
+}
+```
+
+### Temporal Pattern Analysis
+
+```rust
+// Analyze when similar events occur over time
+let patterns = store.get_temporal_patterns("timeout error", 168)?; // Last week
+for pattern in patterns {
+    println!("Hour {}: {} events, avg similarity {:.3}", 
+             pattern.hour_timestamp, pattern.count, pattern.avg_similarity);
+}
+```
+
 ## 🗺️ Distributed Sharding
 
 ### Time-Range Sharding
@@ -262,12 +289,11 @@ use chrono::{Utc, Duration};
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let now = Utc::now();
     
-    // Create shards for different time ranges
     let manager = ShardManagerBuilder::new()
         .with_strategy(ShardingStrategy::TimeRange)
-        .add_time_range_shard("shard_q1", "/tmp/shard1.redb", now - Duration::days(90), now - Duration::days(61))
-        .add_time_range_shard("shard_q2", "/tmp/shard2.redb", now - Duration::days(60), now - Duration::days(31))
-        .add_time_range_shard("shard_q3", "/tmp/shard3.redb", now - Duration::days(30), now)
+        .add_time_range_shard("shard_q1", "/tmp/shard1", now - Duration::days(90), now - Duration::days(61))
+        .add_time_range_shard("shard_q2", "/tmp/shard2", now - Duration::days(60), now - Duration::days(31))
+        .add_time_range_shard("shard_q3", "/tmp/shard3", now - Duration::days(30), now)
         .build()?;
     
     // Data is automatically routed to the correct shard based on timestamp
@@ -294,33 +320,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 ```
 
-### Key Hash Sharding
-
-```rust
-use bund_blobstore::{ShardManagerBuilder, ShardingStrategy};
-
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let manager = ShardManagerBuilder::new()
-        .with_strategy(ShardingStrategy::KeyHash)
-        .add_shard("shard1", "/tmp/shard1.redb")
-        .add_shard("shard2", "/tmp/shard2.redb")
-        .add_shard("shard3", "/tmp/shard3.redb")
-        .build()?;
-    
-    // Keys are hashed and distributed evenly across shards
-    let shard = manager.get_shard_for_key("user_12345");
-    shard.blob().put("user_profile", b"user data", None)?;
-    
-    // Get shard statistics
-    let stats = manager.shard_statistics();
-    for detail in stats.shard_details {
-        println!("{}: {} keys", detail.name, detail.key_count);
-    }
-    
-    Ok(())
-}
-```
-
 ### Consistent Hashing with Caching
 
 ```rust
@@ -328,7 +327,6 @@ use bund_blobstore::{ShardManagerBuilder, ShardingStrategy, CacheConfig};
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Configure cache
     let cache_config = CacheConfig {
         enabled: true,
         max_size: 10000,
@@ -340,16 +338,10 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let manager = ShardManagerBuilder::new()
         .with_strategy(ShardingStrategy::ConsistentHash)
         .with_cache_config(cache_config)
-        .add_shard("node1", "/tmp/node1.redb")
-        .add_shard("node2", "/tmp/node2.redb")
-        .add_shard("node3", "/tmp/node3.redb")
+        .add_shard("node1", "/tmp/node1")
+        .add_shard("node2", "/tmp/node2")
+        .add_shard("node3", "/tmp/node3")
         .build()?;
-    
-    // First access - cache miss
-    let shard1 = manager.get_shard_for_key("user_123");
-    
-    // Second access - cache hit
-    let shard2 = manager.get_shard_for_key("user_123");
     
     // View cache statistics
     let stats = manager.cache_statistics();
@@ -359,35 +351,6 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Preload cache with common keys
     let common_keys = vec!["user_100".to_string(), "user_101".to_string()];
     manager.preload_cache(&common_keys);
-    
-    Ok(())
-}
-```
-
-### Dynamic Shard Management
-
-```rust
-use bund_blobstore::{ShardManagerBuilder, ShardingStrategy, ShardConfig};
-
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut manager = ShardManagerBuilder::new()
-        .with_strategy(ShardingStrategy::KeyHash)
-        .add_shard("shard1", "/tmp/shard1.redb")
-        .add_shard("shard2", "/tmp/shard2.redb")
-        .build()?;
-    
-    // Add a new shard dynamically (for scaling up)
-    let new_shard = ShardConfig {
-        name: "shard3".to_string(),
-        db_path: "/tmp/shard3.redb".into(),
-        strategy: ShardingStrategy::KeyHash,
-        key_range: None,
-        time_range: None,
-    };
-    manager.add_shard(new_shard)?;
-    
-    // Remove a shard (for scaling down)
-    manager.remove_shard("shard2")?;
     
     Ok(())
 }
@@ -433,7 +396,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = BatchWorker::new(store, 100);
     let handle = worker.start();
     
-    // Submit thousands of operations efficiently
     for i in 0..10000 {
         worker.put(
             format!("key_{}", i),
@@ -449,25 +411,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Connection Pooling
-
-```rust
-use bund_blobstore::{ConnectionPool, UnifiedConcurrentStore};
-
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let pool = ConnectionPool::new("pooled.redb", 5)?;
-    
-    // Get connections in round-robin fashion
-    let conn1 = pool.get_connection();
-    let conn2 = pool.get_connection();
-    
-    conn1.blob().put("key1", b"value1", None)?;
-    conn2.blob().put("key2", b"value2", None)?;
-    
-    Ok(())
-}
-```
-
 ## 🏗️ Architecture
 
 ```
@@ -476,6 +419,7 @@ bund_blobstore/
 ├── search.rs          # Full-text & fuzzy search with multiple algorithms
 ├── vector.rs          # Vector embeddings & semantic similarity
 ├── timeline.rs        # Telemetry timeline with time-series data
+├── vector_timeline.rs # Vector-telemetry integration (NEW!)
 ├── graph_store.rs     # Graph-specific operations & indexing
 ├── faceted_search.rs  # Faceted search with filtering
 ├── multi_modal.rs     # Multi-modal embeddings (text, image, audio)
@@ -496,6 +440,7 @@ bund_blobstore/
 - **Fuzzy search**: <15ms with typo tolerance
 - **Vector search**: <50ms for 10K vectors
 - **Hybrid search**: <100ms combining both methods
+- **Vector-telemetry search**: <150ms for time-vector queries
 - **Faceted search**: <20ms with 5 facets
 - **Telemetry query**: <10ms for time-range queries
 - **Sharded query**: <50ms across 3 shards
@@ -503,6 +448,23 @@ bund_blobstore/
 - **Batch processing**: Up to 100,000 ops/second
 
 ## 🔧 Configuration
+
+### Vector-Telemetry Query Configuration
+
+```rust
+use bund_blobstore::VectorTimeQuery;
+
+let query = VectorTimeQuery {
+    time_interval: Some(TimeInterval::last_hour()),
+    vector_query: Some("error message".to_string()),
+    vector_weight: 0.7,      // Weight for semantic similarity
+    time_weight: 0.3,        // Weight for temporal proximity
+    keys: Some(vec!["error".to_string()]),
+    sources: Some(vec!["api_server".to_string()]),
+    limit: 100,
+    min_similarity: 0.3,     // Minimum combined score threshold
+};
+```
 
 ### Cache Configuration
 
@@ -519,32 +481,6 @@ let cache_config = CacheConfig {
 };
 ```
 
-### Sharding Strategy Configuration
-
-```rust
-use bund_blobstore::{ShardingStrategy, ShardManagerBuilder};
-
-// Key hash - distributes evenly by key hash
-let manager = ShardManagerBuilder::new()
-    .with_strategy(ShardingStrategy::KeyHash)
-    .build()?;
-
-// Time range - routes by timestamp
-let manager = ShardManagerBuilder::new()
-    .with_strategy(ShardingStrategy::TimeRange)
-    .build()?;
-
-// Key prefix - routes by key prefix
-let manager = ShardManagerBuilder::new()
-    .with_strategy(ShardingStrategy::KeyPrefix)
-    .build()?;
-
-// Consistent hash - dynamic scaling with virtual nodes
-let manager = ShardManagerBuilder::new()
-    .with_strategy(ShardingStrategy::ConsistentHash)
-    .build()?;
-```
-
 ## 🧪 Testing
 
 ```bash
@@ -552,10 +488,10 @@ let manager = ShardManagerBuilder::new()
 cargo test
 
 # Run specific test suites
+cargo test test_vector_time_search
 cargo test test_shard_manager
 cargo test test_telemetry_store
 cargo test test_full_text_search
-cargo test test_vector_embedding
 
 # Run with logging
 RUST_LOG=debug cargo test
@@ -563,11 +499,17 @@ RUST_LOG=debug cargo test
 
 ## 📈 Use Cases
 
+### Intelligent Observability
+- **Root Cause Analysis**: Find similar incidents within time windows
+- **Anomaly Detection**: Identify unusual patterns in telemetry
+- **Correlation**: Link temporally close and semantically similar events
+- **Pattern Recognition**: Discover when specific types of events occur
+
 ### Telemetry & Monitoring
 - **System Metrics**: CPU, memory, disk usage over time
 - **Application Performance**: Response times, error rates
 - **IoT Data**: Sensor readings with timestamps
-- **Distributed Tracing**: Span storage with sharding
+- **Distributed Tracing**: Span storage with semantic search
 
 ### Search & Discovery
 - **Semantic Search**: Find content by meaning
@@ -580,11 +522,6 @@ RUST_LOG=debug cargo test
 - **Load Balancing**: Even distribution across nodes
 - **Horizontal Scaling**: Add shards dynamically
 - **High Availability**: Redundant shard configuration
-
-### Data Storage
-- **Configuration Management**: Hierarchical configuration
-- **Audit Logs**: Immutable audit trails with checksums
-- **Knowledge Graphs**: Graph relationships with faceted search
 
 ## 🤝 Contributing
 
@@ -623,8 +560,8 @@ This project is licensed under either of:
 - [ ] Cross-shard transactions
 - [ ] Automatic rebalancing
 - [ ] Geo-distributed sharding
+- [ ] Real-time vector index updates
 - [ ] WebAssembly support
-- [ ] Real-time index updates
 
 ---
 
