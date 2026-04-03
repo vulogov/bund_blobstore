@@ -274,7 +274,22 @@ impl TelemetryStore {
         telemetry.load_indices()?;
         Ok(telemetry)
     }
+    /// Create a telemetry store from an existing blob store
+    pub fn open_with_store(
+        store: BlobStore,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut telemetry = TelemetryStore {
+            store,
+            primary_index: Arc::new(RwLock::new(HashMap::new())),
+            secondary_index: Arc::new(RwLock::new(HashMap::new())),
+            time_index: Arc::new(RwLock::new(HashMap::new())),
+            key_source_index: Arc::new(RwLock::new(HashMap::new())),
+            serializer_format: SerializationFormat::Bincode,
+        };
 
+        telemetry.load_indices()?;
+        Ok(telemetry)
+    }
     pub fn store(
         &mut self,
         record: TelemetryRecord,

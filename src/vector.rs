@@ -88,7 +88,43 @@ impl VectorStore {
             serializer_format: SerializationFormat::Bincode,
         })
     }
+    /// Create a vector store from an existing blob store
+    pub fn open_with_store(
+        store: BlobStore,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let config = VectorConfig::default();
+        let embedding_model = Self::init_embedding_model(&config)?;
 
+        let vectors = Arc::new(RwLock::new(HashMap::new()));
+
+        // Try to load existing vectors
+        if let Some(vector_data) = store.get("__vectors__")? {
+            let loaded_vectors: HashMap<String, Vec<f32>> =
+                SerializationHelper::deserialize(&vector_data, SerializationFormat::Bincode)?;
+
+            let mut vectors_lock = vectors.write();
+            for (key, vec) in loaded_vectors {
+                vectors_lock.insert(key, Array1::from(vec));
+            }
+        }
+
+        Ok(VectorStore {
+            store,
+            embedding_model: Arc::new(RwLock::new(embedding_model)),
+            vectors,
+            config,
+            serializer_format: SerializationFormat::Bincode,
+        })
+    }
+
+    fn init_embedding_model(
+        config: &VectorConfig,
+    ) -> Result<TextEmbedding, Box<dyn std::error::Error + Send + Sync>> {
+        let mut init_options = InitOptions::default();
+        init_options.model_name = config.model.clone();
+        init_options.show_download_progress = true;
+        Ok(TextEmbedding::try_new(init_options)?)
+    }
     /// Get a reference to the underlying blob store
     pub fn get_store(&self) -> &BlobStore {
         &self.store

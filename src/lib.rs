@@ -11,6 +11,7 @@ pub mod serialization;
 pub mod sharding;
 pub mod timeline;
 pub mod vector;
+pub mod vector_timeline;
 
 // Re-export commonly used types
 pub use blobstore::{BlobMetadata, BlobStore, QueryOptions};
@@ -68,4 +69,8 @@ pub use sharding::{
     AllocationType, CacheConfig, CacheStats, ShardAllocation, ShardConfig, ShardDetail,
     ShardManager, ShardManagerBuilder, ShardOperation, ShardResult, ShardStatistics,
     ShardingStrategy,
+};
+
+pub use vector_timeline::{
+    TemporalPattern, VectorTelemetryRecord, VectorTelemetryStore, VectorTimeQuery, VectorTimeResult,
 };
