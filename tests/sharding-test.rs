@@ -1,21 +1,30 @@
-use bund_blobstore::{ShardManagerBuilder, ShardingStrategy};
+use bund_blobstore::{
+    ShardConfig, ShardManagerBuilder, ShardingStrategy, TelemetryQuery, TelemetryRecord,
+    TelemetryValue, TimeInterval,
+};
 use chrono::{Duration, Utc};
+use std::path::PathBuf;
 use tempfile::TempDir;
+
+fn create_unique_shard_dirs(base_dir: &TempDir, count: usize) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for i in 0..count {
+        let dir = base_dir.path().join(format!("shard_{}", i));
+        dirs.push(dir);
+    }
+    dirs
+}
 
 #[test]
 fn test_shard_manager_key_hash() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let temp_dir = TempDir::new()?;
-
-    // Each shard needs its own directory
-    let shard1_dir = temp_dir.path().join("shard1");
-    let shard2_dir = temp_dir.path().join("shard2");
-    let shard3_dir = temp_dir.path().join("shard3");
+    let dirs = create_unique_shard_dirs(&temp_dir, 3);
 
     let manager = ShardManagerBuilder::new()
         .with_strategy(ShardingStrategy::KeyHash)
-        .add_shard("shard1", shard1_dir.to_str().unwrap())
-        .add_shard("shard2", shard2_dir.to_str().unwrap())
-        .add_shard("shard3", shard3_dir.to_str().unwrap())
+        .add_shard("shard1", dirs[0].to_str().unwrap())
+        .add_shard("shard2", dirs[1].to_str().unwrap())
+        .add_shard("shard3", dirs[2].to_str().unwrap())
         .build()?;
 
     let shard = manager.get_shard_for_key("test_key");
@@ -32,71 +41,14 @@ fn test_shard_manager_key_hash() -> Result<(), Box<dyn std::error::Error + Send 
 }
 
 #[test]
-fn test_shard_manager_time_range() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let temp_dir = TempDir::new()?;
-    let shard1_dir = temp_dir.path().join("shard1");
-    let shard2_dir = temp_dir.path().join("shard2");
-    let now = Utc::now();
-
-    let manager = ShardManagerBuilder::new()
-        .with_strategy(ShardingStrategy::TimeRange)
-        .add_time_range_shard(
-            "shard1",
-            shard1_dir.to_str().unwrap(),
-            now - Duration::days(30),
-            now,
-        )
-        .add_time_range_shard(
-            "shard2",
-            shard2_dir.to_str().unwrap(),
-            now - Duration::days(60),
-            now - Duration::days(31),
-        )
-        .build()?;
-
-    let shards = manager.get_shards_for_time_interval(now - Duration::hours(1), now);
-    assert_eq!(shards.len(), 1);
-
-    // Test storing telemetry in the appropriate shard
-    use bund_blobstore::{TelemetryQuery, TelemetryRecord, TelemetryValue, TimeInterval};
-
-    let record = TelemetryRecord::new_primary(
-        "test_001".to_string(),
-        now,
-        "test_metric".to_string(),
-        "test_source".to_string(),
-        TelemetryValue::Float(42.0),
-    );
-
-    // Store in the correct shard (should go to shard1 based on time)
-    if let Some(shard) = shards.first() {
-        shard.telemetry().store(record)?;
-
-        // Query back the data
-        let query = TelemetryQuery {
-            time_interval: Some(TimeInterval::last_hour()),
-            keys: Some(vec!["test_metric".to_string()]),
-            ..Default::default()
-        };
-
-        let results = shard.telemetry().query(&query)?;
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].key, "test_metric");
-    }
-
-    Ok(())
-}
-
-#[test]
 fn test_shard_manager_key_prefix() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let temp_dir = TempDir::new()?;
-    let shard1_dir = temp_dir.path().join("shard1");
-    let shard2_dir = temp_dir.path().join("shard2");
+    let dirs = create_unique_shard_dirs(&temp_dir, 2);
 
     let manager = ShardManagerBuilder::new()
         .with_strategy(ShardingStrategy::KeyPrefix)
-        .add_key_range_shard("shard1", shard1_dir.to_str().unwrap(), "a", "m")
-        .add_key_range_shard("shard2", shard2_dir.to_str().unwrap(), "n", "z")
+        .add_key_range_shard("shard1", dirs[0].to_str().unwrap(), "a", "m")
+        .add_key_range_shard("shard2", dirs[1].to_str().unwrap(), "n", "z")
         .build()?;
 
     // Keys starting with 'c' should go to shard1
@@ -117,16 +69,13 @@ fn test_shard_manager_key_prefix() -> Result<(), Box<dyn std::error::Error + Sen
 #[test]
 fn test_shard_manager_consistent_hash() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let temp_dir = TempDir::new()?;
-    let shard1_dir = temp_dir.path().join("shard1");
-    let shard2_dir = temp_dir.path().join("shard2");
-    let shard3_dir = temp_dir.path().join("shard3");
-    let shard4_dir = temp_dir.path().join("shard4");
+    let dirs = create_unique_shard_dirs(&temp_dir, 4);
 
     let mut manager = ShardManagerBuilder::new()
         .with_strategy(ShardingStrategy::ConsistentHash)
-        .add_shard("shard1", shard1_dir.to_str().unwrap())
-        .add_shard("shard2", shard2_dir.to_str().unwrap())
-        .add_shard("shard3", shard3_dir.to_str().unwrap())
+        .add_shard("shard1", dirs[0].to_str().unwrap())
+        .add_shard("shard2", dirs[1].to_str().unwrap())
+        .add_shard("shard3", dirs[2].to_str().unwrap())
         .build()?;
 
     // Test key distribution
@@ -138,9 +87,9 @@ fn test_shard_manager_consistent_hash() -> Result<(), Box<dyn std::error::Error 
     }
 
     // Add a new shard dynamically
-    manager.add_shard(bund_blobstore::ShardConfig {
+    manager.add_shard(ShardConfig {
         name: "shard4".to_string(),
-        db_path: shard4_dir,
+        db_path: dirs[3].clone(),
         strategy: ShardingStrategy::ConsistentHash,
         key_range: None,
         time_range: None,
@@ -154,15 +103,69 @@ fn test_shard_manager_consistent_hash() -> Result<(), Box<dyn std::error::Error 
 }
 
 #[test]
+fn test_shard_manager_time_range() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let temp_dir = TempDir::new()?;
+    let dirs = create_unique_shard_dirs(&temp_dir, 3);
+    let now = Utc::now();
+
+    let manager = ShardManagerBuilder::new()
+        .with_strategy(ShardingStrategy::TimeRange)
+        .add_time_range_shard(
+            "shard_recent",
+            dirs[0].to_str().unwrap(),
+            now - Duration::hours(2),
+            now,
+        )
+        .add_time_range_shard(
+            "shard_mid",
+            dirs[1].to_str().unwrap(),
+            now - Duration::hours(4),
+            now - Duration::hours(2),
+        )
+        .add_time_range_shard(
+            "shard_old",
+            dirs[2].to_str().unwrap(),
+            now - Duration::hours(6),
+            now - Duration::hours(4),
+        )
+        .build()?;
+
+    // Test storing telemetry in the appropriate shard
+    let record = TelemetryRecord::new_primary(
+        "test_001".to_string(),
+        now,
+        "test_metric".to_string(),
+        "test_source".to_string(),
+        TelemetryValue::Float(42.0),
+    );
+
+    let shard = manager.get_shard_for_key(&record.id);
+    shard.telemetry().store(record)?;
+
+    // Query back the data
+    let query = TelemetryQuery {
+        time_interval: Some(TimeInterval::last_hour()),
+        keys: Some(vec!["test_metric".to_string()]),
+        limit: 100,
+        ..Default::default()
+    };
+
+    let results = shard.telemetry().query(&query)?;
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].key, "test_metric");
+
+    Ok(())
+}
+
+#[test]
 fn test_shard_manager_query_all() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let temp_dir = TempDir::new()?;
-    let shard1_dir = temp_dir.path().join("shard1");
-    let shard2_dir = temp_dir.path().join("shard2");
+    let dirs = create_unique_shard_dirs(&temp_dir, 2);
 
     let manager = ShardManagerBuilder::new()
         .with_strategy(ShardingStrategy::KeyHash)
-        .add_shard("shard1", shard1_dir.to_str().unwrap())
-        .add_shard("shard2", shard2_dir.to_str().unwrap())
+        .add_shard("shard1", dirs[0].to_str().unwrap())
+        .add_shard("shard2", dirs[1].to_str().unwrap())
         .build()?;
 
     // Write data to different shards

@@ -5,6 +5,9 @@ use crate::multi_modal::MultiModalStore;
 use crate::search::SearchableBlobStore;
 use crate::timeline::{AggregatedTelemetry, TelemetryQuery, TelemetryRecord, TelemetryStore};
 use crate::vector::VectorStore;
+use crate::vector_timeline::{
+    TemporalPattern, VectorTelemetryStore, VectorTimeQuery, VectorTimeResult,
+};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -839,6 +842,114 @@ impl<'a> TelemetryWriteGuard<'a> {
     }
 }
 
+/// Thread-safe wrapper for VectorTelemetryStore
+#[derive(Clone)]
+pub struct ConcurrentVectorTelemetryStore {
+    inner: Arc<RwLock<VectorTelemetryStore>>,
+}
+
+impl ConcurrentVectorTelemetryStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let store = VectorTelemetryStore::open(path)?;
+        Ok(ConcurrentVectorTelemetryStore {
+            inner: Arc::new(RwLock::new(store)),
+        })
+    }
+
+    pub fn read(&self) -> VectorTelemetryReadGuard<'_> {
+        VectorTelemetryReadGuard {
+            guard: self.inner.read().unwrap(),
+        }
+    }
+
+    pub fn write(&self) -> VectorTelemetryWriteGuard<'_> {
+        VectorTelemetryWriteGuard {
+            guard: self.inner.write().unwrap(),
+        }
+    }
+
+    pub fn store_with_vector(
+        &self,
+        record: crate::timeline::TelemetryRecord,
+        generate_embedding: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut write_guard = self.inner.write().unwrap();
+        write_guard.store_with_vector(record, generate_embedding)
+    }
+
+    pub fn search_vector_time(
+        &self,
+        query: &VectorTimeQuery,
+    ) -> Result<Vec<VectorTimeResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.search_vector_time(query)
+    }
+
+    pub fn find_similar_events(
+        &self,
+        event_id: &str,
+        time_window_hours: i64,
+        limit: usize,
+    ) -> Result<Vec<VectorTimeResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.find_similar_events(event_id, time_window_hours, limit)
+    }
+
+    pub fn get_temporal_patterns(
+        &self,
+        vector_query: &str,
+        hours: i64,
+    ) -> Result<Vec<TemporalPattern>, Box<dyn std::error::Error + Send + Sync>> {
+        let read_guard = self.inner.read().unwrap();
+        read_guard.get_temporal_patterns(vector_query, hours)
+    }
+}
+
+pub struct VectorTelemetryReadGuard<'a> {
+    guard: RwLockReadGuard<'a, VectorTelemetryStore>,
+}
+
+impl<'a> VectorTelemetryReadGuard<'a> {
+    pub fn search_vector_time(
+        &self,
+        query: &VectorTimeQuery,
+    ) -> Result<Vec<VectorTimeResult>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.search_vector_time(query)
+    }
+
+    pub fn find_similar_events(
+        &self,
+        event_id: &str,
+        time_window_hours: i64,
+        limit: usize,
+    ) -> Result<Vec<VectorTimeResult>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard
+            .find_similar_events(event_id, time_window_hours, limit)
+    }
+
+    pub fn get_temporal_patterns(
+        &self,
+        vector_query: &str,
+        hours: i64,
+    ) -> Result<Vec<TemporalPattern>, Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.get_temporal_patterns(vector_query, hours)
+    }
+}
+
+pub struct VectorTelemetryWriteGuard<'a> {
+    guard: RwLockWriteGuard<'a, VectorTelemetryStore>,
+}
+
+impl<'a> VectorTelemetryWriteGuard<'a> {
+    pub fn store_with_vector(
+        &mut self,
+        record: crate::timeline::TelemetryRecord,
+        generate_embedding: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.guard.store_with_vector(record, generate_embedding)
+    }
+}
+
 /// Unified concurrent store that provides access to all storage types
 #[derive(Clone)]
 pub struct UnifiedConcurrentStore {
@@ -849,6 +960,7 @@ pub struct UnifiedConcurrentStore {
     faceted: ConcurrentFacetedIndex,
     multi_modal: ConcurrentMultiModalStore,
     telemetry: ConcurrentTelemetryStore,
+    vector_telemetry: ConcurrentVectorTelemetryStore,
 }
 
 impl UnifiedConcurrentStore {
@@ -857,18 +969,18 @@ impl UnifiedConcurrentStore {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let base_path = base_path.as_ref();
 
-        // Create a unique directory for this unified store
-        let store_dir = base_path;
-        std::fs::create_dir_all(store_dir)?;
+        // Create a unique directory for this unified store if it doesn't exist
+        std::fs::create_dir_all(base_path)?;
 
-        // Each component gets its own subdirectory
-        let blob_path = store_dir.join("blob.redb");
-        let search_path = store_dir.join("search.redb");
-        let vector_path = store_dir.join("vector.redb");
-        let graph_path = store_dir.join("graph.redb");
-        let faceted_path = store_dir.join("faceted.redb");
-        let multi_modal_path = store_dir.join("multimodal.redb");
-        let telemetry_path = store_dir.join("telemetry.redb");
+        // Each component gets its own file within the directory
+        let blob_path = base_path.join("blob.redb");
+        let search_path = base_path.join("search.redb");
+        let vector_path = base_path.join("vector.redb");
+        let graph_path = base_path.join("graph.redb");
+        let faceted_path = base_path.join("faceted.redb");
+        let multi_modal_path = base_path.join("multimodal.redb");
+        let telemetry_path = base_path.join("telemetry.redb");
+        let vector_telemetry_path = base_path.join("vector_telemetry.redb");
 
         Ok(UnifiedConcurrentStore {
             blob: ConcurrentBlobStore::open(&blob_path)?,
@@ -878,6 +990,7 @@ impl UnifiedConcurrentStore {
             faceted: ConcurrentFacetedIndex::open(&faceted_path)?,
             multi_modal: ConcurrentMultiModalStore::open(&multi_modal_path)?,
             telemetry: ConcurrentTelemetryStore::open(&telemetry_path)?,
+            vector_telemetry: ConcurrentVectorTelemetryStore::open(&vector_telemetry_path)?,
         })
     }
 
@@ -907,5 +1020,9 @@ impl UnifiedConcurrentStore {
 
     pub fn telemetry(&self) -> &ConcurrentTelemetryStore {
         &self.telemetry
+    }
+
+    pub fn vector_telemetry(&self) -> &ConcurrentVectorTelemetryStore {
+        &self.vector_telemetry
     }
 }

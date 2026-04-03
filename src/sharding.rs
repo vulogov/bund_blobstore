@@ -179,10 +179,11 @@ impl ShardManager {
         let mut shards = Vec::new();
 
         for config in &shard_configs {
-            if let Some(parent) = config.db_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+            // Create a unique directory for this shard
+            let shard_dir = config.db_path.parent().unwrap_or(&config.db_path);
+            std::fs::create_dir_all(shard_dir)?;
 
+            // Each shard needs its own database file path
             let store = UnifiedConcurrentStore::open(&config.db_path)?;
             shards.push(store);
         }
