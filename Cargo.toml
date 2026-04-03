@@ -29,6 +29,11 @@ base64 = "0.21" # For encoding binary data
 regex = "1.10"  # For pattern matching
 chrono = { version = "0.4.*", features = ["serde"] }
 rust_dynamic = "0.49.0"
+rand = "0.10.0"
 
 [dev-dependencies]
 tempfile = "3.0"
+
+[[example]]
+name = "telemetry_sharding_demo"
+path = "examples/telemetry_sharding_demo.rs"

@@ -2,9 +2,133 @@ use crate::concurrent::UnifiedConcurrentStore;
 use crate::timeline::TelemetryQuery;
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Cache entry with expiration
+struct CacheEntry<T> {
+    value: T,
+    expires_at: Instant,
+}
+
+impl<T> CacheEntry<T> {
+    fn new(value: T, ttl: Duration) -> Self {
+        CacheEntry {
+            value,
+            expires_at: Instant::now() + ttl,
+        }
+    }
+
+    fn is_expired(&self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+}
+
+/// LRU Cache implementation
+struct LRUCache<K, V> {
+    cache: HashMap<K, CacheEntry<V>>,
+    order: VecDeque<K>,
+    capacity: usize,
+    default_ttl: Duration,
+}
+
+impl<K: std::hash::Hash + Eq + Clone, V: Clone> LRUCache<K, V> {
+    fn new(capacity: usize, default_ttl: Duration) -> Self {
+        LRUCache {
+            cache: HashMap::new(),
+            order: VecDeque::new(),
+            capacity,
+            default_ttl,
+        }
+    }
+
+    fn get(&mut self, key: &K) -> Option<V> {
+        if let Some(entry) = self.cache.get(key) {
+            if entry.is_expired() {
+                self.remove(key);
+                return None;
+            }
+
+            // Move to front (most recently used)
+            if let Some(pos) = self.order.iter().position(|k| k == key) {
+                self.order.remove(pos);
+                self.order.push_front(key.clone());
+            }
+
+            return Some(entry.value.clone());
+        }
+        None
+    }
+
+    fn put(&mut self, key: K, value: V, ttl: Option<Duration>) {
+        let ttl = ttl.unwrap_or(self.default_ttl);
+
+        // Remove if already exists
+        if self.cache.contains_key(&key) {
+            self.remove(&key);
+        }
+
+        // Evict oldest if at capacity
+        while self.cache.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_back() {
+                self.cache.remove(&oldest);
+            }
+        }
+
+        self.order.push_front(key.clone());
+        self.cache.insert(key, CacheEntry::new(value, ttl));
+    }
+
+    fn remove(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.cache.remove(key);
+    }
+
+    fn clear(&mut self) {
+        self.cache.clear();
+        self.order.clear();
+    }
+
+    fn len(&self) -> usize {
+        self.cache.len()
+    }
+}
+
+/// Cache statistics
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub size: usize,
+    pub capacity: usize,
+    pub hit_rate: f64,
+}
+
+/// Cache configuration
+#[derive(Debug, Clone)]
+pub struct CacheConfig {
+    pub enabled: bool,
+    pub max_size: usize,
+    pub default_ttl: Duration,
+    pub key_cache_ttl: Duration,
+    pub time_cache_ttl: Duration,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        CacheConfig {
+            enabled: true,
+            max_size: 10000,
+            default_ttl: Duration::from_secs(300), // 5 minutes
+            key_cache_ttl: Duration::from_secs(600), // 10 minutes
+            time_cache_ttl: Duration::from_secs(300), // 5 minutes
+        }
+    }
+}
 
 /// Sharding strategy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,21 +143,24 @@ pub enum ShardingStrategy {
 #[derive(Debug, Clone)]
 pub struct ShardConfig {
     pub name: String,
-    pub db_path: PathBuf, // Changed from 'path' to 'db_path'
+    pub db_path: PathBuf,
     pub strategy: ShardingStrategy,
     pub key_range: Option<(String, String)>,
     pub time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
 }
 
-/// Shard manager for distributed UnifiedConcurrentStore
+/// Shard manager for distributed UnifiedConcurrentStore with caching
 pub struct ShardManager {
     shards: Vec<UnifiedConcurrentStore>,
     shard_configs: Vec<ShardConfig>,
     strategy: ShardingStrategy,
-    key_index: Arc<RwLock<HashMap<String, usize>>>,
-    time_index: Arc<RwLock<HashMap<String, Vec<usize>>>>,
+    key_cache: Arc<RwLock<LRUCache<String, usize>>>,
+    time_cache: Arc<RwLock<LRUCache<String, Vec<usize>>>>,
     consistent_hash_ring: Arc<RwLock<HashMap<u64, usize>>>,
     virtual_nodes: usize,
+    cache_config: CacheConfig,
+    cache_hits: Arc<RwLock<u64>>,
+    cache_misses: Arc<RwLock<u64>>,
 }
 
 impl ShardManager {
@@ -41,9 +168,16 @@ impl ShardManager {
         shard_configs: Vec<ShardConfig>,
         strategy: ShardingStrategy,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::new_with_cache_config(shard_configs, strategy, CacheConfig::default())
+    }
+
+    pub fn new_with_cache_config(
+        shard_configs: Vec<ShardConfig>,
+        strategy: ShardingStrategy,
+        cache_config: CacheConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let mut shards = Vec::new();
 
-        // Ensure parent directory exists for each shard's database file
         for config in &shard_configs {
             if let Some(parent) = config.db_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -53,14 +187,27 @@ impl ShardManager {
             shards.push(store);
         }
 
+        let key_cache = Arc::new(RwLock::new(LRUCache::new(
+            cache_config.max_size,
+            cache_config.key_cache_ttl,
+        )));
+
+        let time_cache = Arc::new(RwLock::new(LRUCache::new(
+            cache_config.max_size,
+            cache_config.time_cache_ttl,
+        )));
+
         let mut manager = ShardManager {
             shards,
             shard_configs,
             strategy,
-            key_index: Arc::new(RwLock::new(HashMap::new())),
-            time_index: Arc::new(RwLock::new(HashMap::new())),
+            key_cache,
+            time_cache,
             consistent_hash_ring: Arc::new(RwLock::new(HashMap::new())),
             virtual_nodes: 150,
+            cache_config,
+            cache_hits: Arc::new(RwLock::new(0)),
+            cache_misses: Arc::new(RwLock::new(0)),
         };
 
         if strategy == ShardingStrategy::ConsistentHash {
@@ -71,8 +218,13 @@ impl ShardManager {
     }
 
     pub fn get_shard_for_key(&self, key: &str) -> &UnifiedConcurrentStore {
-        if let Some(shard_idx) = self.key_index.read().get(key) {
-            return &self.shards[*shard_idx];
+        // Check cache first if enabled
+        if self.cache_config.enabled {
+            if let Some(shard_idx) = self.key_cache.write().get(&key.to_string()) {
+                self.increment_hits();
+                return &self.shards[shard_idx];
+            }
+            self.increment_misses();
         }
 
         let shard_idx = match self.strategy {
@@ -84,6 +236,7 @@ impl ShardManager {
                 let mut found_idx = 0;
                 for (idx, config) in self.shard_configs.iter().enumerate() {
                     if let Some((start, end)) = &config.key_range {
+                        // Compare string slices properly
                         if key >= start.as_str() && key <= end.as_str() {
                             found_idx = idx;
                             break;
@@ -99,7 +252,15 @@ impl ShardManager {
             _ => 0,
         };
 
-        self.key_index.write().insert(key.to_string(), shard_idx);
+        // Cache the result if enabled
+        if self.cache_config.enabled {
+            self.key_cache.write().put(
+                key.to_string(),
+                shard_idx,
+                Some(self.cache_config.key_cache_ttl),
+            );
+        }
+
         &self.shards[shard_idx]
     }
 
@@ -110,8 +271,13 @@ impl ShardManager {
     ) -> Vec<&UnifiedConcurrentStore> {
         let bucket_key = self.time_bucket_key(start, end);
 
-        if let Some(shard_indices) = self.time_index.read().get(&bucket_key) {
-            return shard_indices.iter().map(|&idx| &self.shards[idx]).collect();
+        // Check cache first if enabled
+        if self.cache_config.enabled {
+            if let Some(shard_indices) = self.time_cache.write().get(&bucket_key) {
+                self.increment_hits();
+                return shard_indices.iter().map(|&idx| &self.shards[idx]).collect();
+            }
+            self.increment_misses();
         }
 
         let mut shard_indices = Vec::new();
@@ -131,9 +297,15 @@ impl ShardManager {
             }
         }
 
-        self.time_index
-            .write()
-            .insert(bucket_key, shard_indices.clone());
+        // Cache the result if enabled
+        if self.cache_config.enabled {
+            self.time_cache.write().put(
+                bucket_key,
+                shard_indices.clone(),
+                Some(self.cache_config.time_cache_ttl),
+            );
+        }
+
         shard_indices.iter().map(|&idx| &self.shards[idx]).collect()
     }
 
@@ -219,6 +391,9 @@ impl ShardManager {
         self.shards.push(store);
         self.shard_configs.push(config);
 
+        // Clear caches when shards change
+        self.clear_caches();
+
         if self.strategy == ShardingStrategy::ConsistentHash {
             self.rebuild_consistent_hash_ring();
         }
@@ -234,8 +409,8 @@ impl ShardManager {
             self.shards.remove(index);
             self.shard_configs.remove(index);
 
-            self.key_index.write().clear();
-            self.time_index.write().clear();
+            // Clear caches when shards change
+            self.clear_caches();
 
             if self.strategy == ShardingStrategy::ConsistentHash {
                 self.rebuild_consistent_hash_ring();
@@ -263,6 +438,90 @@ impl ShardManager {
         }
 
         stats
+    }
+
+    /// Get cache statistics
+    pub fn cache_statistics(&self) -> CacheStats {
+        let hits = *self.cache_hits.read();
+        let misses = *self.cache_misses.read();
+        let total = hits + misses;
+        let hit_rate = if total > 0 {
+            hits as f64 / total as f64
+        } else {
+            0.0
+        };
+
+        CacheStats {
+            hits,
+            misses,
+            size: self.key_cache.read().len() + self.time_cache.read().len(),
+            capacity: self.cache_config.max_size,
+            hit_rate,
+        }
+    }
+
+    /// Clear all caches
+    pub fn clear_caches(&self) {
+        self.key_cache.write().clear();
+        self.time_cache.write().clear();
+        *self.cache_hits.write() = 0;
+        *self.cache_misses.write() = 0;
+    }
+
+    /// Update cache configuration
+    pub fn update_cache_config(&mut self, config: CacheConfig) {
+        self.cache_config = config;
+        if !self.cache_config.enabled {
+            self.clear_caches();
+        }
+    }
+
+    /// Preload cache with common keys
+    pub fn preload_cache(&self, keys: &[String]) {
+        if !self.cache_config.enabled {
+            return;
+        }
+
+        for key in keys {
+            let shard_idx = match self.strategy {
+                ShardingStrategy::KeyHash => {
+                    let hash = self.hash_key(key);
+                    (hash % self.shards.len() as u64) as usize
+                }
+                ShardingStrategy::KeyPrefix => {
+                    let mut found_idx = 0;
+                    for (idx, config) in self.shard_configs.iter().enumerate() {
+                        if let Some((start, end)) = &config.key_range {
+                            // Compare string slices properly
+                            if key.as_str() >= start.as_str() && key.as_str() <= end.as_str() {
+                                found_idx = idx;
+                                break;
+                            }
+                        }
+                    }
+                    found_idx
+                }
+                ShardingStrategy::ConsistentHash => {
+                    let hash = self.hash_key(key);
+                    self.find_consistent_hash_node(hash)
+                }
+                _ => 0,
+            };
+
+            self.key_cache.write().put(
+                key.clone(),
+                shard_idx,
+                Some(self.cache_config.key_cache_ttl),
+            );
+        }
+    }
+
+    fn increment_hits(&self) {
+        *self.cache_hits.write() += 1;
+    }
+
+    fn increment_misses(&self) {
+        *self.cache_misses.write() += 1;
     }
 
     fn hash_key(&self, key: &str) -> u64 {
@@ -374,6 +633,7 @@ pub enum AllocationType {
 pub struct ShardManagerBuilder {
     configs: Vec<ShardConfig>,
     strategy: ShardingStrategy,
+    cache_config: CacheConfig,
 }
 
 impl ShardManagerBuilder {
@@ -381,11 +641,29 @@ impl ShardManagerBuilder {
         ShardManagerBuilder {
             configs: Vec::new(),
             strategy: ShardingStrategy::KeyHash,
+            cache_config: CacheConfig::default(),
         }
     }
 
     pub fn with_strategy(mut self, strategy: ShardingStrategy) -> Self {
         self.strategy = strategy;
+        self
+    }
+
+    pub fn with_cache_config(mut self, cache_config: CacheConfig) -> Self {
+        self.cache_config = cache_config;
+        self
+    }
+
+    pub fn disable_cache(mut self) -> Self {
+        self.cache_config.enabled = false;
+        self
+    }
+
+    pub fn set_cache_ttl(mut self, ttl_seconds: u64) -> Self {
+        self.cache_config.default_ttl = Duration::from_secs(ttl_seconds);
+        self.cache_config.key_cache_ttl = Duration::from_secs(ttl_seconds);
+        self.cache_config.time_cache_ttl = Duration::from_secs(ttl_seconds);
         self
     }
 
@@ -435,7 +713,7 @@ impl ShardManagerBuilder {
     }
 
     pub fn build(self) -> Result<ShardManager, Box<dyn std::error::Error + Send + Sync>> {
-        ShardManager::new(self.configs, self.strategy)
+        ShardManager::new_with_cache_config(self.configs, self.strategy, self.cache_config)
     }
 }
 

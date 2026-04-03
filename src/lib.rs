@@ -65,6 +65,7 @@ pub use timeline::{
 };
 
 pub use sharding::{
-    AllocationType, ShardAllocation, ShardConfig, ShardDetail, ShardManager, ShardManagerBuilder,
-    ShardOperation, ShardResult, ShardStatistics, ShardingStrategy,
+    AllocationType, CacheConfig, CacheStats, ShardAllocation, ShardConfig, ShardDetail,
+    ShardManager, ShardManagerBuilder, ShardOperation, ShardResult, ShardStatistics,
+    ShardingStrategy,
 };
