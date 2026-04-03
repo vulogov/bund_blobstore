@@ -1,8 +1,10 @@
 pub mod batch;
 pub mod blobstore;
 pub mod concurrent;
+pub mod distributed_graph;
 pub mod faceted_search;
 pub mod fuzzy_algorithms;
+pub mod graph_algorithms;
 pub mod graph_store;
 pub mod multi_modal;
 pub mod pool;
@@ -59,3 +61,10 @@ pub use sharding::{
 pub use vector_timeline::{
     TemporalPattern, VectorTelemetryRecord, VectorTelemetryStore, VectorTimeQuery, VectorTimeResult,
 };
+
+pub use distributed_graph::{
+    DistributedGraphEdge, DistributedGraphManager, DistributedGraphNode, DistributedGraphQuery,
+    GraphPartition, GraphTraversalResult,
+};
+
+pub use graph_algorithms::{CycleDetectionResult, GraphAlgorithms, LongestPathResult};
