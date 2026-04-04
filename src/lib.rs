@@ -1,6 +1,7 @@
 pub mod batch;
 pub mod blobstore;
 pub mod concurrent;
+pub mod data_distribution;
 pub mod distributed_graph;
 pub mod faceted_search;
 pub mod fuzzy_algorithms;
@@ -68,6 +69,11 @@ pub use distributed_graph::{
 };
 
 pub use graph_algorithms::{CycleDetectionResult, GraphAlgorithms, LongestPathResult};
+
+pub use data_distribution::{
+    AdaptiveConfig, DataDistributionManager, DistributionStats, DistributionStrategy,
+    SimilarityCluster, SimilarityConfig, TimeBucketConfig, TimeBucketSize,
+};
 
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string().clone()
