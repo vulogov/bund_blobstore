@@ -1,16 +1,16 @@
-use crate::blobstore::BlobMetadata;
-use crate::search::{FuzzySearchResult, SearchResult};
-use crate::sharding::{CacheConfig, ShardManager, ShardManagerBuilder, ShardingStrategy};
-use crate::timeline::{TelemetryQuery, TelemetryRecord};
-use crate::vector::VectorSearchResult;
-use crate::vector_timeline::{VectorTimeQuery, VectorTimeResult};
-use chrono::{DateTime, Datelike, LocalResult, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+use crate::blobstore::{BlobMetadata, BlobStore};
+use crate::search::{FuzzySearchResult, SearchResult};
+use crate::timeline::{TelemetryQuery, TelemetryRecord, TelemetryValue, TimeInterval};
+use crate::vector::{VectorSearchResult, VectorStore};
+use crate::vector_timeline::{VectorTimeQuery, VectorTimeResult};
 
 /// Distribution strategy types
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub enum DistributionStrategy {
 }
 
 /// Time bucket configuration
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct TimeBucketConfig {
     pub bucket_size: TimeBucketSize,
     pub timezone_offset: i32,
@@ -41,15 +41,15 @@ impl Default for TimeBucketConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeBucketSize {
-    Minutes(u32), // 1-60 minutes
-    Hours(u32),   // 1-24 hours
-    Days(u32),    // 1-30 days
-    Weeks(u32),   // 1-4 weeks
-    Months(u32),  // 1-12 months
+    Minutes(u32),
+    Hours(u32),
+    Days(u32),
+    Weeks(u32),
+    Months(u32),
 }
 
 /// Key similarity configuration
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct SimilarityConfig {
     pub use_prefix: bool,
     pub use_suffix: bool,
@@ -71,7 +71,7 @@ impl Default for SimilarityConfig {
 }
 
 /// Adaptive distribution configuration
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct AdaptiveConfig {
     pub load_balancing_interval: Duration,
     pub rebalance_threshold: f64,
@@ -113,15 +113,52 @@ pub struct SimilarityCluster {
     pub similarity_score: f64,
 }
 
+/// Shard information
+#[derive(Debug, Clone)]
+pub struct ShardInfo {
+    pub name: String,
+    pub path: PathBuf,
+    pub key_count: usize,
+}
+
+/// Bucket statistics for minute-grade aggregation
+#[derive(Debug, Clone)]
+pub struct BucketStats {
+    pub bucket: String,
+    pub count: usize,
+    pub avg_value: f64,
+    pub min_value: Option<f64>,
+    pub max_value: Option<f64>,
+    pub sum_value: Option<f64>,
+}
+
 /// Data distribution manager
 pub struct DataDistributionManager {
-    shard_manager: Arc<ShardManager>,
+    shards: Arc<RwLock<Vec<ShardInfo>>>,
+    stores: Arc<RwLock<HashMap<String, BlobStore>>>,
+    vector_stores: Arc<RwLock<HashMap<String, VectorStore>>>, // Add vector stores
     strategy: Arc<RwLock<DistributionStrategy>>,
+    round_robin_counter: Arc<AtomicUsize>,
     time_bucket_cache: Arc<RwLock<HashMap<String, String>>>,
     key_clusters: Arc<RwLock<HashMap<String, SimilarityCluster>>>,
     load_history: Arc<RwLock<VecDeque<HashMap<String, usize>>>>,
     adaptive_config: AdaptiveConfig,
-    round_robin_counter: Arc<AtomicUsize>,
+}
+
+impl Clone for DataDistributionManager {
+    fn clone(&self) -> Self {
+        DataDistributionManager {
+            shards: self.shards.clone(),
+            stores: self.stores.clone(),
+            vector_stores: self.vector_stores.clone(),
+            strategy: self.strategy.clone(),
+            round_robin_counter: self.round_robin_counter.clone(),
+            time_bucket_cache: self.time_bucket_cache.clone(),
+            key_clusters: self.key_clusters.clone(),
+            load_history: self.load_history.clone(),
+            adaptive_config: self.adaptive_config.clone(),
+        }
+    }
 }
 
 impl DataDistributionManager {
@@ -133,21 +170,30 @@ impl DataDistributionManager {
         let base_path = base_path.as_ref();
         std::fs::create_dir_all(base_path)?;
 
-        let mut builder = ShardManagerBuilder::new()
-            .with_strategy(ShardingStrategy::ConsistentHash)
-            .with_cache_config(CacheConfig::default());
+        let mut shards = Vec::new();
+        let mut stores = HashMap::new();
+        let mut vector_stores = HashMap::new();
 
-        // Explicitly add 4 shards with unique paths
         for i in 0..4 {
-            let shard_path = base_path.join(format!("shard_{}", i));
+            let shard_name = format!("shard_{}", i);
+            let shard_path = base_path.join(&shard_name);
             std::fs::create_dir_all(&shard_path)?;
-            builder = builder.add_shard(&format!("shard_{}", i), shard_path.to_str().unwrap());
+            let store = BlobStore::open(shard_path.join("data.redb"))?;
+            let vector_store = VectorStore::open(shard_path.join("vectors.redb"))?;
+
+            shards.push(ShardInfo {
+                name: shard_name.clone(),
+                path: shard_path,
+                key_count: 0,
+            });
+            stores.insert(shard_name.clone(), store);
+            vector_stores.insert(shard_name, vector_store);
         }
 
-        let shard_manager = Arc::new(builder.build()?);
-
         Ok(DataDistributionManager {
-            shard_manager,
+            shards: Arc::new(RwLock::new(shards)),
+            stores: Arc::new(RwLock::new(stores)),
+            vector_stores: Arc::new(RwLock::new(vector_stores)),
             strategy: Arc::new(RwLock::new(strategy)),
             round_robin_counter: Arc::new(AtomicUsize::new(0)),
             time_bucket_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -166,20 +212,30 @@ impl DataDistributionManager {
         let base_path = base_path.as_ref();
         std::fs::create_dir_all(base_path)?;
 
-        let mut builder = ShardManagerBuilder::new()
-            .with_strategy(ShardingStrategy::ConsistentHash)
-            .with_cache_config(CacheConfig::default());
+        let mut shards = Vec::new();
+        let mut stores = HashMap::new();
+        let mut vector_stores = HashMap::new();
 
         for i in 0..num_shards {
-            let shard_path = base_path.join(format!("shard_{}", i));
+            let shard_name = format!("shard_{}", i);
+            let shard_path = base_path.join(&shard_name);
             std::fs::create_dir_all(&shard_path)?;
-            builder = builder.add_shard(&format!("shard_{}", i), shard_path.to_str().unwrap());
+            let store = BlobStore::open(shard_path.join("data.redb"))?;
+            let vector_store = VectorStore::open(shard_path.join("vectors.redb"))?;
+
+            shards.push(ShardInfo {
+                name: shard_name.clone(),
+                path: shard_path,
+                key_count: 0,
+            });
+            stores.insert(shard_name.clone(), store);
+            vector_stores.insert(shard_name, vector_store);
         }
 
-        let shard_manager = Arc::new(builder.build()?);
-
         Ok(DataDistributionManager {
-            shard_manager,
+            shards: Arc::new(RwLock::new(shards)),
+            stores: Arc::new(RwLock::new(stores)),
+            vector_stores: Arc::new(RwLock::new(vector_stores)),
             strategy: Arc::new(RwLock::new(strategy)),
             round_robin_counter: Arc::new(AtomicUsize::new(0)),
             time_bucket_cache: Arc::new(RwLock::new(HashMap::new())),
@@ -196,147 +252,598 @@ impl DataDistributionManager {
         data: &[u8],
         _timestamp: Option<DateTime<Utc>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let strategy = self.strategy.read().clone();
+        // Get the shard name first (this will increment the counter)
+        let shard_name = self.get_target_shard(key, _timestamp)?;
 
-        let shard_name = match strategy {
-            DistributionStrategy::RoundRobin => self.round_robin_distribution()?,
-            DistributionStrategy::TimeBucket(config) => {
-                self.time_bucket_distribution(key, _timestamp, &config)?
-            }
-            DistributionStrategy::KeySimilarity(config) => {
-                self.key_similarity_distribution(key, &config)?
-            }
-            DistributionStrategy::Adaptive(config) => {
-                self.adaptive_distribution(key, _timestamp, &config)?
-            }
+        log::debug!("Putting key '{}' into shard '{}'", key, shard_name); // Debug output
+
+        // Get a clone of the store
+        let mut store = {
+            let stores = self.stores.read();
+            stores.get(&shard_name).ok_or("Shard not found")?.clone()
         };
 
-        // Get the shard using the shard name as a key
-        let shard = self.shard_manager.get_shard_for_key(&shard_name);
-        shard.blob().put(key, data, None)?;
+        store.put(key, data, None)?;
+
+        // Update key count
+        {
+            let mut shards = self.shards.write();
+            if let Some(shard) = shards.iter_mut().find(|s| s.name == shard_name) {
+                shard.key_count += 1;
+            }
+        }
 
         self.update_load_history();
-
         Ok(())
     }
 
-    /// Store telemetry record with automatic distribution
+    /// Store telemetry record
     pub fn put_telemetry(
         &self,
         record: TelemetryRecord,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let timestamp = Some(record.timestamp());
-        let shard_id = self.determine_shard(&record.key, timestamp)?;
-        let shard = self.shard_manager.get_shard_for_key(&shard_id);
-        shard.telemetry().store(record)?;
+        let shard_name = self.get_target_shard(&record.key, timestamp)?;
+        let mut stores = self.stores.write();
+        let store = stores.get_mut(&shard_name).ok_or("Shard not found")?;
+
+        let telemetry_key = format!("telemetry:{}:{}", record.timestamp().timestamp(), record.id);
+        store.put(
+            &telemetry_key,
+            &serde_json::to_vec(&record)?,
+            Some("telemetry"),
+        )?;
 
         self.update_load_history();
-
         Ok(())
     }
 
-    /// Determine which shard to use based on strategy
-    fn determine_shard(
+    /// Store telemetry with primary-secondary relationship support
+    pub fn put_telemetry_with_relation(
+        &self,
+        record: TelemetryRecord,
+        primary_id: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let timestamp = Some(record.timestamp());
+        let shard_name = self.get_target_shard(&record.key, timestamp)?;
+        let mut stores = self.stores.write();
+        let store = stores.get_mut(&shard_name).ok_or("Shard not found")?;
+
+        let telemetry_key = if let Some(primary) = primary_id {
+            format!("telemetry:secondary:{}:{}", primary, record.id)
+        } else {
+            format!("telemetry:primary:{}", record.id)
+        };
+
+        store.put(
+            &telemetry_key,
+            &serde_json::to_vec(&record)?,
+            Some("telemetry"),
+        )?;
+
+        if let Some(primary) = primary_id {
+            let relation_key = format!("telemetry:relation:{}:{}", primary, record.id);
+            store.put(&relation_key, b"linked", Some("telemetry"))?;
+        }
+
+        self.update_load_history();
+        Ok(())
+    }
+
+    /// Get secondary records for a primary telemetry record
+    pub fn get_secondaries(
+        &self,
+        primary_id: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let mut secondaries = Vec::new();
+
+        for store in stores.values() {
+            let all_keys = store.list_keys()?;
+            let prefix = format!("telemetry:secondary:{}:", primary_id);
+            for key in all_keys {
+                if key.starts_with(&prefix) {
+                    if let Some(data) = store.get(&key)? {
+                        if let Ok(record) = serde_json::from_slice::<TelemetryRecord>(&data) {
+                            secondaries.push(record);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(secondaries)
+    }
+
+    /// Get primary record for a secondary telemetry record
+    pub fn get_primary(
+        &self,
+        secondary_id: &str,
+    ) -> Result<Option<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+
+        for store in stores.values() {
+            let all_keys = store.list_keys()?;
+            for key in all_keys {
+                if key.contains(secondary_id) && key.starts_with("telemetry:primary:") {
+                    if let Some(data) = store.get(&key)? {
+                        if let Ok(record) = serde_json::from_slice::<TelemetryRecord>(&data) {
+                            return Ok(Some(record));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Retrieve data
+    pub fn get(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        for store in stores.values() {
+            if let Some(data) = store.get(key)? {
+                return Ok(Some(data));
+            }
+        }
+        Ok(None) // Return None, not ()
+    }
+
+    /// Get with metadata
+    pub fn get_with_metadata(
+        &self,
+        key: &str,
+    ) -> Result<Option<(Vec<u8>, BlobMetadata)>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        for store in stores.values() {
+            if let Some(data) = store.get(key)? {
+                if let Ok(Some(metadata)) = store.get_metadata(key) {
+                    return Ok(Some((data, metadata)));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Delete data
+    pub fn delete(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let mut stores = self.stores.write();
+        for store in stores.values_mut() {
+            if store.exists(key)? {
+                return Ok(store.remove(key)?);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Check if key exists
+    pub fn exists(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        for store in stores.values() {
+            if store.exists(key)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// List keys matching pattern
+    pub fn list_keys(
+        &self,
+        pattern: Option<&str>,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let mut all_keys = Vec::new();
+
+        for store in stores.values() {
+            let keys = store.list_keys()?;
+            if let Some(pattern) = pattern {
+                let matched: Vec<String> = keys
+                    .into_iter()
+                    .filter(|k| {
+                        k.contains(pattern) && !k.starts_with("__") && !k.starts_with("telemetry:")
+                    })
+                    .collect();
+                all_keys.extend(matched);
+            } else {
+                let filtered: Vec<String> = keys
+                    .into_iter()
+                    .filter(|k| !k.starts_with("__") && !k.starts_with("telemetry:"))
+                    .collect();
+                all_keys.extend(filtered);
+            }
+        }
+
+        all_keys.sort();
+        all_keys.dedup();
+        Ok(all_keys)
+    }
+
+    /// Query telemetry across shards
+    pub fn query_telemetry(
+        &self,
+        query: &TelemetryQuery,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let mut all_records = Vec::new();
+
+        for store in stores.values() {
+            let all_keys = store.list_keys()?;
+            for key in all_keys {
+                if key.starts_with("telemetry:") && !key.contains(":relation:") {
+                    if let Some(data) = store.get(&key)? {
+                        if let Ok(record) = serde_json::from_slice::<TelemetryRecord>(&data) {
+                            // Apply time filter
+                            if let Some(time_interval) = &query.time_interval {
+                                let ts = record.timestamp();
+                                if ts < time_interval.start || ts > time_interval.end {
+                                    continue;
+                                }
+                            }
+
+                            // Apply keys filter
+                            if let Some(ref key_filters) = query.keys {
+                                if !key_filters.iter().any(|k| record.key.contains(k)) {
+                                    continue;
+                                }
+                            }
+
+                            // Apply sources filter
+                            if let Some(ref source_filters) = query.sources {
+                                if !source_filters.iter().any(|s| record.source.contains(s)) {
+                                    continue;
+                                }
+                            }
+
+                            all_records.push(record);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp (newest first)
+        all_records.sort_by(|a, b| b.timestamp().cmp(&a.timestamp()));
+
+        // Apply limit and offset
+        let start = query.offset.min(all_records.len());
+        let end = (start + query.limit).min(all_records.len());
+
+        Ok(all_records[start..end].to_vec())
+    }
+
+    /// Query telemetry with advanced filters
+    pub fn query_telemetry_advanced(
+        &self,
+        time_interval: Option<TimeInterval>,
+        keys: Option<Vec<String>>,
+        sources: Option<Vec<String>>,
+        value_type: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let query = TelemetryQuery {
+            time_interval,
+            keys,
+            sources,
+            primary_only: false,
+            secondary_only: false,
+            primary_id: None,
+            value_type,
+            limit,
+            offset: 0,
+            bucket_by_minute: false,
+        };
+        self.query_telemetry(&query)
+    }
+
+    /// Search across shards
+    pub fn search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let mut results = Vec::new();
+
+        for store in stores.values() {
+            let all_keys = store.list_keys()?;
+            for key in all_keys {
+                if !key.starts_with("__") && !key.starts_with("telemetry:") {
+                    if let Some(data) = store.get(&key)? {
+                        if let Ok(text) = String::from_utf8(data) {
+                            if text.to_lowercase().contains(&query.to_lowercase()) {
+                                results.push(SearchResult {
+                                    key,
+                                    score: 1.0,
+                                    matches: vec![query.to_string()],
+                                    metadata: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        results.truncate(limit);
+        Ok(results)
+    }
+    /// Fuzzy search across shards
+    pub fn fuzzy_search(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<FuzzySearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let mut results = Vec::new();
+        let query_lower = query.to_lowercase();
+
+        for store in stores.values() {
+            let all_keys = store.list_keys()?;
+            for key in all_keys {
+                if !key.starts_with("__") && !key.starts_with("telemetry:") {
+                    if let Some(data) = store.get(&key)? {
+                        if let Ok(text) = String::from_utf8(data) {
+                            let text_lower = text.to_lowercase();
+                            // Simple fuzzy matching - check if query appears in text
+                            if text_lower.contains(&query_lower) {
+                                results.push(FuzzySearchResult {
+                                    key,
+                                    term: query.to_string(),
+                                    distance: 0,
+                                    score: 1.0,
+                                    metadata: None,
+                                });
+                            } else {
+                                // Try to find similar words
+                                for word in text_lower.split_whitespace() {
+                                    let distance = levenshtein_distance(&query_lower, word);
+                                    if distance <= 2 {
+                                        results.push(FuzzySearchResult {
+                                            key: key.clone(),
+                                            term: word.to_string(),
+                                            distance,
+                                            score: 1.0 - (distance as f64 / 10.0),
+                                            metadata: None,
+                                        });
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Deduplicate by key, keeping the highest score
+        let mut unique_results: std::collections::HashMap<String, FuzzySearchResult> =
+            std::collections::HashMap::new();
+        for result in results {
+            let entry = unique_results
+                .entry(result.key.clone())
+                .or_insert(result.clone());
+            if result.score > entry.score {
+                *entry = result;
+            }
+        }
+
+        let mut final_results: Vec<FuzzySearchResult> = unique_results.into_values().collect();
+        final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        final_results.truncate(limit);
+
+        Ok(final_results)
+    }
+
+    /// Search by key pattern
+    pub fn search_by_key(
+        &self,
+        pattern: &str,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let mut matches = Vec::new();
+
+        for (_name, store) in stores.iter() {
+            let keys = store.list_keys()?;
+            for key in keys {
+                if key.contains(pattern) && !key.starts_with("__") && !key.starts_with("telemetry:")
+                {
+                    matches.push(key);
+                }
+            }
+        }
+
+        matches.sort();
+        matches.dedup();
+        Ok(matches)
+    }
+
+    /// Search by source
+    pub fn search_by_source(
+        &self,
+        source: &str,
+    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.query_telemetry_advanced(None, None, Some(vec![source.to_string()]), None, 1000)
+    }
+
+    /// Get minute-grade bucketed telemetry data
+    pub fn get_minute_bucketed(
+        &self,
+        time_interval: TimeInterval,
+        key_filter: Option<&str>,
+    ) -> Result<HashMap<String, Vec<TelemetryRecord>>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let records = self.query_telemetry_advanced(
+            Some(time_interval),
+            key_filter.map(|k| vec![k.to_string()]),
+            None,
+            None,
+            10000,
+        )?;
+
+        let mut buckets: HashMap<String, Vec<TelemetryRecord>> = HashMap::new();
+
+        for record in records {
+            let ts = record.timestamp();
+            let bucket_key = format!(
+                "{:04}-{:02}-{:02} {:02}:{:02}",
+                ts.year(),
+                ts.month(),
+                ts.day(),
+                ts.hour(),
+                ts.minute()
+            );
+            buckets
+                .entry(bucket_key)
+                .or_insert_with(Vec::new)
+                .push(record);
+        }
+
+        Ok(buckets)
+    }
+
+    /// Get aggregated statistics for bucketed data
+    pub fn get_bucket_stats(
+        &self,
+        time_interval: TimeInterval,
+        key_filter: Option<&str>,
+    ) -> Result<Vec<BucketStats>, Box<dyn std::error::Error + Send + Sync>> {
+        let buckets = self.get_minute_bucketed(time_interval, key_filter)?;
+        let mut stats = Vec::new();
+
+        for (bucket, records) in buckets {
+            let numeric_values: Vec<f64> =
+                records.iter().filter_map(|r| r.value.as_float()).collect();
+
+            let avg = if !numeric_values.is_empty() {
+                numeric_values.iter().sum::<f64>() / numeric_values.len() as f64
+            } else {
+                0.0
+            };
+
+            let min = numeric_values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
+            let max = numeric_values
+                .iter()
+                .fold(f64::NEG_INFINITY, |a, &b| a.max(b));
+            let sum: f64 = numeric_values.iter().sum();
+
+            stats.push(BucketStats {
+                bucket,
+                count: records.len(),
+                avg_value: avg,
+                min_value: if min.is_finite() { Some(min) } else { None },
+                max_value: if max.is_finite() { Some(max) } else { None },
+                sum_value: if sum > 0.0 { Some(sum) } else { None },
+            });
+        }
+
+        stats.sort_by(|a, b| a.bucket.cmp(&b.bucket));
+        Ok(stats)
+    }
+
+    /// Get target shard for a key
+    fn get_target_shard(
         &self,
         key: &str,
         timestamp: Option<DateTime<Utc>>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let strategy = self.strategy.read().clone();
+        let strategy = {
+            let strategy_guard = self.strategy.read();
+            strategy_guard.clone()
+        };
 
-        match strategy {
-            DistributionStrategy::RoundRobin => self.round_robin_distribution(),
-            DistributionStrategy::TimeBucket(config) => {
-                self.time_bucket_distribution(key, timestamp, &config)
-            }
-            DistributionStrategy::KeySimilarity(config) => {
-                self.key_similarity_distribution(key, &config)
-            }
-            DistributionStrategy::Adaptive(config) => {
-                self.adaptive_distribution(key, timestamp, &config)
-            }
-        }
-    }
-
-    /// Round robin distribution
-    fn round_robin_distribution(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let shards = self.get_shard_names();
+        let shards = {
+            let shards_guard = self.shards.read();
+            shards_guard.clone()
+        };
 
         if shards.is_empty() {
             return Err("No shards available".into());
         }
 
-        // Atomically fetch and increment the counter
-        let counter = self.round_robin_counter.fetch_add(1, Ordering::SeqCst);
-        let idx = counter % shards.len();
-        let shard_name = shards[idx].clone();
+        let idx = match strategy {
+            DistributionStrategy::RoundRobin => {
+                // Increment counter and get previous value
+                let counter = self.round_robin_counter.fetch_add(1, Ordering::SeqCst);
+                let idx = counter % shards.len();
+                println!(
+                    "Round-robin: counter={}, idx={}, shards={}",
+                    counter,
+                    idx,
+                    shards.len()
+                );
+                idx
+            }
+            DistributionStrategy::TimeBucket(config) => {
+                self.get_time_bucket_index(key, timestamp, &config, &shards)
+            }
+            DistributionStrategy::KeySimilarity(config) => {
+                self.get_key_similarity_index(key, &config, &shards)
+            }
+            DistributionStrategy::Adaptive(config) => {
+                self.get_adaptive_index(key, timestamp, &config, &shards)
+            }
+        };
 
-        log::debug!(
-            "Round-robin: counter={}, idx={}, shard={}, total_shards={}",
-            counter,
-            idx,
-            shard_name,
-            shards.len()
-        );
-
-        Ok(shard_name)
+        Ok(shards[idx].name.clone())
     }
 
-    /// Time bucket distribution
-    fn time_bucket_distribution(
+    fn get_time_bucket_index(
         &self,
         _key: &str,
         timestamp: Option<DateTime<Utc>>,
         config: &TimeBucketConfig,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        shards: &[ShardInfo],
+    ) -> usize {
         let ts = timestamp.unwrap_or_else(Utc::now);
         let bucket_key = self.get_time_bucket_key(ts, config);
 
         // Check cache
-        if let Some(shard) = self.time_bucket_cache.read().get(&bucket_key) {
-            return Ok(shard.clone());
+        if let Some(shard_name) = self.time_bucket_cache.read().get(&bucket_key) {
+            if let Some(idx) = shards.iter().position(|s| s.name == *shard_name) {
+                return idx;
+            }
         }
 
-        // Determine shard based on bucket hash
-        let shards = self.get_shard_names();
         let hash = self.hash_string(&bucket_key);
-        let shard_idx = hash % shards.len();
-        let shard_name = shards[shard_idx].clone();
-
-        // Cache the result
+        let idx = hash % shards.len();
+        let shard_name = shards[idx].name.clone();
         self.time_bucket_cache
             .write()
-            .insert(bucket_key, shard_name.clone());
+            .insert(bucket_key, shard_name);
 
-        Ok(shard_name)
+        idx
     }
 
-    /// Key similarity distribution
-    fn key_similarity_distribution(
+    fn get_key_similarity_index(
         &self,
         key: &str,
         config: &SimilarityConfig,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        // Find existing cluster
+        shards: &[ShardInfo],
+    ) -> usize {
+        // Check existing clusters
         let clusters = self.key_clusters.read();
-
-        // Try to find similar existing key
         for (existing_key, cluster) in clusters.iter() {
             let similarity = self.calculate_key_similarity(key, existing_key, config);
             if similarity >= config.min_similarity && cluster.size < config.max_cluster_size {
-                return Ok(cluster.shard.clone());
+                if let Some(idx) = shards.iter().position(|s| s.name == cluster.shard) {
+                    return idx;
+                }
             }
         }
 
         // Create new cluster
-        let shards = self.get_shard_names();
         let hash = self.hash_string(key);
-        let shard_idx = hash % shards.len();
-        let shard_name = shards[shard_idx].clone();
+        let idx = hash % shards.len();
+        let shard_name = shards[idx].name.clone();
 
         let cluster = SimilarityCluster {
             cluster_id: format!("cluster_{}", hash),
             keys: vec![key.to_string()],
-            shard: shard_name.clone(),
+            shard: shard_name,
             size: 1,
             similarity_score: 1.0,
         };
@@ -344,35 +851,28 @@ impl DataDistributionManager {
         drop(clusters);
         self.key_clusters.write().insert(key.to_string(), cluster);
 
-        Ok(shard_name)
+        idx
     }
 
-    /// Adaptive distribution based on load
-    fn adaptive_distribution(
+    fn get_adaptive_index(
         &self,
         _key: &str,
         _timestamp: Option<DateTime<Utc>>,
-        config: &AdaptiveConfig,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let shards = self.get_shard_names();
-        let loads = self.get_shard_loads();
-
+        _config: &AdaptiveConfig,
+        shards: &[ShardInfo],
+    ) -> usize {
         // Find least loaded shard
-        let min_load_shard = loads
-            .iter()
-            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(name, _)| name.clone())
-            .unwrap_or_else(|| shards[0].clone());
-
-        // Check if rebalancing is needed
-        if self.should_rebalance(&loads, config) {
-            self.trigger_rebalance();
+        let mut min_count = usize::MAX;
+        let mut min_idx = 0;
+        for (i, shard) in shards.iter().enumerate() {
+            if shard.key_count < min_count {
+                min_count = shard.key_count;
+                min_idx = i;
+            }
         }
-
-        Ok(min_load_shard)
+        min_idx
     }
 
-    /// Calculate key similarity using various methods
     fn calculate_key_similarity(&self, key1: &str, key2: &str, config: &SimilarityConfig) -> f64 {
         let mut similarity = 0.0;
         let mut components = 0;
@@ -441,7 +941,6 @@ impl DataDistributionManager {
         }
     }
 
-    /// Get time bucket key
     fn get_time_bucket_key(&self, timestamp: DateTime<Utc>, config: &TimeBucketConfig) -> String {
         let adjusted = timestamp + chrono::Duration::hours(config.timezone_offset as i64);
 
@@ -487,77 +986,198 @@ impl DataDistributionManager {
         }
     }
 
-    /// Get shard loads
-    fn get_shard_loads(&self) -> HashMap<String, f64> {
-        let stats = self.shard_manager.shard_statistics();
-        let total_keys: usize = stats.shard_details.iter().map(|d| d.key_count).sum();
-
-        stats
-            .shard_details
-            .iter()
-            .map(|detail| {
-                let load = if total_keys > 0 {
-                    detail.key_count as f64 / total_keys as f64
-                } else {
-                    0.0
-                };
-                (detail.name.clone(), load)
-            })
-            .collect()
-    }
-
-    /// Check if rebalancing is needed
-    fn should_rebalance(&self, loads: &HashMap<String, f64>, config: &AdaptiveConfig) -> bool {
-        let loads_vec: Vec<f64> = loads.values().cloned().collect();
-        if loads_vec.is_empty() {
-            return false;
-        }
-
-        let max_load = loads_vec.iter().fold(0.0_f64, |a, &b| a.max(b));
-        let min_load = loads_vec.iter().fold(f64::INFINITY, |a, &b| a.min(b));
-
-        max_load - min_load > config.rebalance_threshold
-    }
-
-    /// Trigger rebalancing
-    fn trigger_rebalance(&self) {
-        // Clear caches
-        self.time_bucket_cache.write().clear();
-        self.key_clusters.write().clear();
-    }
-
-    /// Update load history
     fn update_load_history(&self) {
-        let loads = self.get_shard_loads();
-        let mut history = self.load_history.write();
-
-        // Convert f64 loads to usize for history
-        let loads_usize: HashMap<String, usize> = loads
+        let shards = self.shards.read();
+        let loads: HashMap<String, usize> = shards
             .iter()
-            .map(|(k, v)| (k.clone(), (*v * 1000.0) as usize))
+            .map(|s| (s.name.clone(), s.key_count))
             .collect();
 
-        history.push_back(loads_usize);
+        let mut history = self.load_history.write();
+        history.push_back(loads);
 
         while history.len() > self.adaptive_config.history_size {
             history.pop_front();
         }
     }
 
-    /// Get distribution statistics
-    pub fn get_distribution_stats(&self) -> DistributionStats {
-        let stats = self.shard_manager.shard_statistics();
-        let shard_distribution: HashMap<String, usize> = stats
-            .shard_details
+    fn hash_string(&self, s: &str) -> usize {
+        s.bytes().fold(0usize, |acc, b| {
+            acc.wrapping_mul(31).wrapping_add(b as usize)
+        })
+    }
+
+    // ========== Shard Management APIs ==========
+
+    /// Add a new shard
+    pub fn add_shard(
+        &self,
+        name: &str,
+        path: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let shard_path = PathBuf::from(path);
+        std::fs::create_dir_all(&shard_path)?;
+        let store = BlobStore::open(shard_path.join("data.redb"))?;
+
+        let mut shards = self.shards.write();
+        let mut stores = self.stores.write();
+
+        // Check if shard already exists
+        if shards.iter().any(|s| s.name == name) {
+            return Err(format!("Shard '{}' already exists", name).into());
+        }
+
+        shards.push(ShardInfo {
+            name: name.to_string(),
+            path: shard_path,
+            key_count: 0,
+        });
+        stores.insert(name.to_string(), store);
+
+        self.clear_caches();
+
+        Ok(())
+    }
+
+    /// Add a key-range based shard
+    pub fn add_key_range_shard(
+        &self,
+        name: &str,
+        path: &str,
+        _start_key: &str,
+        _end_key: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.add_shard(name, path)
+    }
+
+    /// Add a time-range based shard
+    pub fn add_time_range_shard(
+        &self,
+        name: &str,
+        path: &str,
+        _start_time: DateTime<Utc>,
+        _end_time: DateTime<Utc>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.add_shard(name, path)
+    }
+
+    /// Remove a shard
+    pub fn remove_shard(
+        &self,
+        name: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let mut shards = self.shards.write();
+        let mut stores = self.stores.write();
+
+        if let Some(index) = shards.iter().position(|s| s.name == name) {
+            shards.remove(index);
+            stores.remove(name);
+            self.clear_caches();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get number of shards
+    pub fn shard_count(&self) -> usize {
+        self.shards.read().len()
+    }
+
+    /// Get all shard names
+    pub fn get_all_shard_names(&self) -> Vec<String> {
+        self.shards.read().iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// Get shard details
+    pub fn get_shard_details(&self) -> Vec<ShardInfo> {
+        self.shards.read().clone()
+    }
+
+    /// Check if a shard exists
+    pub fn shard_exists(&self, shard_name: &str) -> bool {
+        self.shards.read().iter().any(|s| s.name == shard_name)
+    }
+
+    /// Get shard loads for adaptive distribution
+    pub fn get_shard_loads(&self) -> HashMap<String, f64> {
+        let shards = self.shards.read();
+        let total: usize = shards.iter().map(|s| s.key_count).sum();
+
+        shards
             .iter()
-            .map(|d| (d.name.clone(), d.key_count))
+            .map(|s| {
+                (
+                    s.name.clone(),
+                    if total > 0 {
+                        s.key_count as f64 / total as f64
+                    } else {
+                        0.0
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Get shard for a specific key
+    pub fn get_shard_for_key(
+        &self,
+        key: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        self.get_target_shard(key, None)
+    }
+
+    /// Trigger rebalancing of data across shards
+    pub fn trigger_rebalance(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let shards = self.shards.read();
+        let total_keys: usize = shards.iter().map(|s| s.key_count).sum();
+        if total_keys == 0 || shards.len() <= 1 {
+            return Ok(());
+        }
+
+        let target_per_shard = total_keys / shards.len();
+
+        // Find overloaded shards
+        let overloaded: Vec<ShardInfo> = shards
+            .iter()
+            .filter(|s| s.key_count > target_per_shard * 2)
+            .cloned()
             .collect();
 
-        let total_records: usize = shard_distribution.values().sum();
+        let underloaded: Vec<ShardInfo> = shards
+            .iter()
+            .filter(|s| s.key_count < target_per_shard / 2)
+            .cloned()
+            .collect();
 
-        // Calculate entropy (distribution uniformity)
-        let entropy = if total_records > 0 {
-            let num_shards = shard_distribution.len() as f64;
+        if overloaded.is_empty() || underloaded.is_empty() {
+            return Ok(());
+        }
+
+        // Clear caches to force redistribution on next writes
+        self.clear_caches();
+
+        Ok(())
+    }
+
+    /// Rebalance data (public API)
+    pub fn rebalance(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.trigger_rebalance()
+    }
+
+    /// Get distribution statistics
+    pub fn get_distribution_stats(&self) -> DistributionStats {
+        let shards = self.shards.read();
+        let total_records: usize = shards.iter().map(|s| s.key_count).sum();
+
+        let shard_distribution: HashMap<String, usize> = shards
+            .iter()
+            .map(|s| (s.name.clone(), s.key_count))
+            .collect();
+
+        // Calculate entropy
+        let entropy = if total_records > 0 && shards.len() > 0 {
+            let num_shards = shards.len() as f64;
             let ideal = total_records as f64 / num_shards;
             let variance: f64 = shard_distribution
                 .values()
@@ -570,9 +1190,9 @@ impl DataDistributionManager {
         };
 
         // Calculate load balance score
-        let load_balance_score = if total_records > 0 {
+        let load_balance_score = if total_records > 0 && shards.len() > 0 {
             let max_load = *shard_distribution.values().max().unwrap_or(&0) as f64;
-            let avg_load = total_records as f64 / shard_distribution.len() as f64;
+            let avg_load = total_records as f64 / shards.len() as f64;
             if max_load > 0.0 {
                 avg_load / max_load
             } else {
@@ -588,17 +1208,25 @@ impl DataDistributionManager {
             distribution_entropy: entropy,
             load_balance_score,
             time_bucket_distribution: HashMap::new(),
-            similarity_clusters: self.get_similarity_clusters(),
+            similarity_clusters: self.key_clusters.read().values().cloned().collect(),
         }
     }
 
-    fn get_similarity_clusters(&self) -> Vec<SimilarityCluster> {
-        self.key_clusters.read().values().cloned().collect()
+    /// Get distribution stats (alias)
+    pub fn get_stats(&self) -> DistributionStats {
+        self.get_distribution_stats()
     }
 
-    /// Change distribution strategy at runtime
+    /// Clear caches
+    pub fn clear_caches(&self) {
+        self.time_bucket_cache.write().clear();
+        self.key_clusters.write().clear();
+    }
+
+    /// Set distribution strategy
     pub fn set_strategy(&self, strategy: DistributionStrategy) {
         *self.strategy.write() = strategy;
+        self.clear_caches();
     }
 
     /// Get current strategy
@@ -606,349 +1234,234 @@ impl DataDistributionManager {
         self.strategy.read().clone()
     }
 
-    fn get_shard_names(&self) -> Vec<String> {
-        let stats = self.shard_manager.shard_statistics();
-        let mut names: Vec<String> = stats.shard_details.iter().map(|d| d.name.clone()).collect();
-        names.sort(); // Sort alphabetically to ensure consistent order
-        // Debug output to verify shards
-        if names.len() < 4 {
-            eprintln!("Warning: Only {} shards available, expected 4", names.len());
-        }
-        names
+    /// Get similarity clusters
+    pub fn get_similarity_clusters(&self) -> Vec<SimilarityCluster> {
+        self.key_clusters.read().values().cloned().collect()
     }
 
-    /// Simple hash function
-    fn hash_string(&self, s: &str) -> usize {
-        s.bytes().fold(0usize, |acc, b| {
-            acc.wrapping_mul(31).wrapping_add(b as usize)
-        })
-    }
-
-    /// Get underlying shard manager
-    pub fn shard_manager(&self) -> Arc<ShardManager> {
-        self.shard_manager.clone()
-    }
-
-    // ========== Unified Retrieval Interface ==========
-
-    /// Unified get operation - automatically routes to correct shard
-    pub fn get(
+    /// Get time range of stored telemetry data
+    pub fn get_telemetry_time_range(
         &self,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-        // First try the shard that would be used for writing (for round-robin, this is deterministic)
-        // This optimizes the common case
-        let strategy = self.strategy.read().clone();
-        let predicted_shard = match strategy {
-            DistributionStrategy::RoundRobin => {
-                // For round-robin, we can't predict which shard a key was written to without state
-                // So we'll scan all shards
-                None
-            }
-            DistributionStrategy::KeySimilarity(_) => {
-                // For key similarity, we can compute the shard
-                Some(self.key_similarity_distribution(key, &SimilarityConfig::default())?)
-            }
-            _ => None,
-        };
+    ) -> Result<Option<(DateTime<Utc>, DateTime<Utc>)>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let stores = self.stores.read();
+        let mut min_time: Option<DateTime<Utc>> = None;
+        let mut max_time: Option<DateTime<Utc>> = None;
 
-        if let Some(shard_id) = predicted_shard {
-            let shard = self.shard_manager.get_shard_for_key(&shard_id);
-            if let Some(data) = shard.blob().get(key)? {
-                return Ok(Some(data));
-            }
-        }
-
-        // Fall back to scanning all shards
-        let shard_names = self.get_all_shard_names();
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            if let Some(data) = shard.blob().get(key)? {
-                return Ok(Some(data));
-            }
-        }
-
-        Ok(None)
-    }
-
-    /// Unified get with metadata
-    pub fn get_with_metadata(
-        &self,
-        key: &str,
-    ) -> Result<Option<(Vec<u8>, BlobMetadata)>, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
-
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            if let Some(data) = shard.blob().get(key)? {
-                let read_guard = shard.blob().read();
-                if let Ok(Some(metadata)) = read_guard.get_metadata(key) {
-                    return Ok(Some((data, metadata)));
+        for (_name, store) in stores.iter() {
+            let all_keys = store.list_keys()?;
+            for key in all_keys {
+                if key.starts_with("telemetry:") && !key.contains(":relation:") {
+                    if let Some(data) = store.get(&key)? {
+                        if let Ok(record) = serde_json::from_slice::<TelemetryRecord>(&data) {
+                            let ts = record.timestamp();
+                            if min_time.is_none() || ts < min_time.unwrap() {
+                                min_time = Some(ts);
+                            }
+                            if max_time.is_none() || ts > max_time.unwrap() {
+                                max_time = Some(ts);
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        Ok(None)
-    }
-
-    /// Unified telemetry query across all shards
-    pub fn query_telemetry(
-        &self,
-        query: &TelemetryQuery,
-    ) -> Result<Vec<TelemetryRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
-        let mut all_records = Vec::new();
-
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            let records = shard.telemetry().query(query)?;
-            all_records.extend(records);
+        match (min_time, max_time) {
+            (Some(min), Some(max)) => Ok(Some((min, max))),
+            _ => Ok(None),
         }
-
-        // Apply limit and offset after merging
-        let start = query.offset.min(all_records.len());
-        let end = (start + query.limit).min(all_records.len());
-
-        Ok(all_records[start..end].to_vec())
     }
-
-    /// Unified search across all shards
-    pub fn search(
+    /// Store text for vector search
+    pub fn put_vector_text(
         &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<SearchResult>, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
-        let mut all_results = Vec::new();
-
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            let results = shard.search().search(query, limit)?;
-            all_results.extend(results);
-        }
-
-        // Sort by score and truncate
-        all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        all_results.truncate(limit);
-
-        Ok(all_results)
+        key: &str,
+        text: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let shard_name = self.get_target_shard(key, None)?;
+        let mut vector_stores = self.vector_stores.write();
+        let vector_store = vector_stores
+            .get_mut(&shard_name)
+            .ok_or("Vector store not found")?;
+        vector_store.insert_text(key, text, None)?;
+        Ok(())
     }
 
-    /// Unified fuzzy search across all shards
-    pub fn fuzzy_search(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<Vec<FuzzySearchResult>, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
-        let mut all_results = Vec::new();
-
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            let results = shard.search().fuzzy_search(query, limit)?;
-            all_results.extend(results);
-        }
-
-        // Sort by score and truncate
-        all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        all_results.truncate(limit);
-
-        Ok(all_results)
-    }
-
-    /// Unified vector search across all shards
+    /// Vector search across all shards
     pub fn vector_search(
         &self,
         query: &str,
         limit: usize,
     ) -> Result<Vec<VectorSearchResult>, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
+        let vector_stores = self.vector_stores.read();
         let mut all_results = Vec::new();
 
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            let results = shard.vector().search_similar(query, limit)?;
+        // Collect stores first, then search
+        let stores_to_search: Vec<_> = vector_stores.values().collect();
+
+        for vector_store in stores_to_search {
+            let results = vector_store.search_similar(query, limit)?;
             all_results.extend(results);
         }
 
-        // Sort by score and truncate
         all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         all_results.truncate(limit);
 
         Ok(all_results)
     }
 
-    /// Unified telemetry search with time and vector constraints
+    /// Store telemetry with vector embedding for time-vector search
+    pub fn put_telemetry_with_vector(
+        &self,
+        record: TelemetryRecord,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let shard_name = self.get_target_shard(&record.key, Some(record.timestamp()))?;
+        let mut stores = self.stores.write();
+        let store = stores.get_mut(&shard_name).ok_or("Shard not found")?;
+        let mut vector_stores = self.vector_stores.write();
+        let vector_store = vector_stores
+            .get_mut(&shard_name)
+            .ok_or("Vector store not found")?;
+
+        // Store telemetry record
+        let telemetry_key = format!("telemetry:{}:{}", record.timestamp().timestamp(), record.id);
+        store.put(
+            &telemetry_key,
+            &serde_json::to_vec(&record)?,
+            Some("telemetry"),
+        )?;
+
+        // Generate text for embedding from the telemetry value
+        let text_for_embedding = match &record.value {
+            TelemetryValue::String(s) => s.clone(),
+            TelemetryValue::Float(f) => format!("{}", f),
+            TelemetryValue::Int(i) => format!("{}", i),
+            TelemetryValue::Json(j) => j.to_string(),
+            _ => format!("{:?}", record.value),
+        };
+
+        // Store vector embedding
+        let vector_key = format!("vector:telemetry:{}", record.id);
+        vector_store.insert_text(&vector_key, &text_for_embedding, Some("telemetry"))?;
+
+        self.update_load_history();
+        Ok(())
+    }
+
+    /// Time-vector search combining temporal and semantic similarity
     pub fn search_vector_time(
         &self,
         query: &VectorTimeQuery,
     ) -> Result<Vec<VectorTimeResult>, Box<dyn std::error::Error + Send + Sync>> {
-        let target_shards = if let Some(time_interval) = &query.time_interval {
-            self.get_shards_for_time_interval(time_interval.start, time_interval.end)
-        } else {
-            self.get_all_shard_names()
-        };
+        let vector_stores = self.vector_stores.read();
+        let stores = self.stores.read();
+        let mut results = Vec::new();
 
-        let mut all_results = Vec::new();
+        // First, get vector search results
+        if let Some(vector_query) = &query.vector_query {
+            for (shard_name, vector_store) in vector_stores.iter() {
+                let vector_results = vector_store.search_similar(vector_query, query.limit * 2)?;
 
-        for shard_name in target_shards {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            let results = shard.vector_telemetry().search_vector_time(query)?;
-            all_results.extend(results);
-        }
+                for vector_result in vector_results {
+                    // Extract telemetry ID from vector key
+                    let telemetry_id = vector_result.key.replace("vector:telemetry:", "");
 
-        // Sort by combined score and truncate
-        all_results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
-        all_results.truncate(query.limit);
+                    // Get the actual telemetry record
+                    let _telemetry_key = format!("telemetry:*:{}", telemetry_id);
+                    if let Some(store) = stores.get(shard_name) {
+                        let all_keys = store.list_keys()?;
+                        for key in all_keys {
+                            if key.contains(&telemetry_id) && key.starts_with("telemetry:") {
+                                if let Some(data) = store.get(&key)? {
+                                    if let Ok(record) =
+                                        serde_json::from_slice::<TelemetryRecord>(&data)
+                                    {
+                                        // Calculate time score
+                                        let time_score = if let Some(time_interval) =
+                                            &query.time_interval
+                                        {
+                                            let ts = record.timestamp();
+                                            if ts >= time_interval.start && ts <= time_interval.end
+                                            {
+                                                1.0
+                                            } else {
+                                                0.0
+                                            }
+                                        } else {
+                                            1.0
+                                        };
 
-        Ok(all_results)
-    }
+                                        let combined_score = (vector_result.score as f64
+                                            * query.vector_weight as f64)
+                                            + (time_score * query.time_weight as f64);
 
-    /// Delete a key across all shards (finds and deletes)
-    pub fn delete(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
-
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            if shard.blob().exists(key)? {
-                return Ok(shard.blob().remove(key)?);
-            }
-        }
-
-        Ok(false)
-    }
-
-    /// Check if a key exists across all shards
-    pub fn exists(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
-
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            if shard.blob().exists(key)? {
-                return Ok(true);
-            }
-        }
-
-        Ok(false)
-    }
-
-    /// List all keys matching a pattern across all shards
-    pub fn list_keys(
-        &self,
-        pattern: Option<&str>,
-    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_names = self.get_all_shard_names();
-        let mut all_keys = Vec::new();
-
-        for shard_name in shard_names {
-            let shard = self.shard_manager.get_shard_for_key(&shard_name);
-            let keys = shard.blob().list_keys()?;
-
-            if let Some(pattern) = pattern {
-                let matched_keys: Vec<String> =
-                    keys.into_iter().filter(|k| k.contains(pattern)).collect();
-                all_keys.extend(matched_keys);
-            } else {
-                all_keys.extend(keys);
-            }
-        }
-
-        Ok(all_keys)
-    }
-
-    /// Get statistics about data distribution
-    pub fn get_stats(&self) -> DistributionStats {
-        self.get_distribution_stats()
-    }
-
-    /// Helper: Get shard for a specific key
-    #[allow(dead_code)]
-    fn get_shard_for_key(
-        &self,
-        key: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        // For determining which shard to use for storing a new key,
-        // we use the distribution strategy directly without looking up an existing shard
-        let strategy = self.strategy.read().clone();
-
-        match strategy {
-            DistributionStrategy::RoundRobin => self.round_robin_distribution(),
-            DistributionStrategy::TimeBucket(config) => {
-                self.time_bucket_distribution(key, None, &config)
-            }
-            DistributionStrategy::KeySimilarity(config) => {
-                self.key_similarity_distribution(key, &config)
-            }
-            DistributionStrategy::Adaptive(config) => {
-                self.adaptive_distribution(key, None, &config)
-            }
-        }
-    }
-
-    /// Helper: Get shards for a time interval
-    fn get_shards_for_time_interval(
-        &self,
-        start: DateTime<Utc>,
-        end: DateTime<Utc>,
-    ) -> Vec<String> {
-        let strategy = self.strategy.read().clone();
-
-        match strategy {
-            DistributionStrategy::TimeBucket(config) => {
-                let mut current = start;
-                let mut shards = HashSet::new();
-
-                while current <= end {
-                    let bucket_key = self.get_time_bucket_key(current, &config);
-                    let hash = self.hash_string(&bucket_key);
-                    let shard_names = self.get_shard_names();
-                    let shard_idx = hash % shard_names.len();
-                    shards.insert(shard_names[shard_idx].clone());
-
-                    current = match config.bucket_size {
-                        TimeBucketSize::Minutes(minutes) => {
-                            current + chrono::Duration::minutes(minutes as i64)
-                        }
-                        TimeBucketSize::Hours(hours) => {
-                            current + chrono::Duration::hours(hours as i64)
-                        }
-                        TimeBucketSize::Days(days) => current + chrono::Duration::days(days as i64),
-                        TimeBucketSize::Weeks(weeks) => {
-                            current + chrono::Duration::weeks(weeks as i64)
-                        }
-                        TimeBucketSize::Months(months) => {
-                            // Simple month addition
-                            let year = current.year();
-                            let month = current.month();
-                            let new_month = month + months;
-                            let result = if new_month > 12 {
-                                Utc.with_ymd_and_hms(year + 1, new_month - 12, 1, 0, 0, 0)
-                            } else {
-                                Utc.with_ymd_and_hms(year, new_month, 1, 0, 0, 0)
-                            };
-
-                            // Handle LocalResult properly
-                            match result {
-                                LocalResult::Single(dt) => dt,
-                                LocalResult::Ambiguous(_, _) | LocalResult::None => {
-                                    current + chrono::Duration::days(30)
+                                        if combined_score >= query.min_similarity as f64 {
+                                            results.push(VectorTimeResult {
+                                                record,
+                                                time_score,
+                                                vector_score: vector_result.score as f64,
+                                                combined_score,
+                                                time_distance_seconds: 0,
+                                                similarity: vector_result.score,
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
-                    };
+                    }
                 }
-
-                shards.into_iter().collect()
             }
-            _ => self.get_all_shard_names(),
+        }
+
+        // Sort by combined score
+        results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
+        results.truncate(query.limit);
+
+        Ok(results)
+    }
+    /// Get underlying shard manager (for compatibility)
+    pub fn shard_manager(&self) -> Arc<Self> {
+        Arc::new(self.clone())
+    }
+}
+
+// Helper function for Levenshtein distance
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
+
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
+
+    let mut matrix = vec![vec![0; b_len + 1]; a_len + 1];
+
+    for i in 0..=a_len {
+        matrix[i][0] = i;
+    }
+    for j in 0..=b_len {
+        matrix[0][j] = j;
+    }
+
+    for i in 1..=a_len {
+        for j in 1..=b_len {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] {
+                0
+            } else {
+                1
+            };
+            matrix[i][j] = std::cmp::min(
+                std::cmp::min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1),
+                matrix[i - 1][j - 1] + cost,
+            );
         }
     }
 
-    /// Helper: Get all shard names
-    pub fn get_all_shard_names(&self) -> Vec<String> {
-        let stats = self.shard_manager.shard_statistics();
-        let mut names: Vec<String> = stats.shard_details.iter().map(|d| d.name.clone()).collect();
-        names.sort();
-        names
-    }
+    matrix[a_len][b_len]
 }
