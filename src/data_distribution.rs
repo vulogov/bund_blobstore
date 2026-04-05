@@ -1,5 +1,6 @@
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -7,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::blobstore::{BlobMetadata, BlobStore};
-use crate::search::{FuzzySearchResult, SearchResult};
+use crate::search::{FuzzySearchResult, SearchResult, SearchableBlobStore};
 use crate::timeline::{TelemetryQuery, TelemetryRecord, TelemetryValue, TimeInterval};
 use crate::vector::{VectorSearchResult, VectorStore};
 use crate::vector_timeline::{VectorTimeQuery, VectorTimeResult};
@@ -132,17 +133,69 @@ pub struct BucketStats {
     pub sum_value: Option<f64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChunkingConfig {
+    pub chunk_size: usize,
+    pub chunk_overlap: usize,
+    pub min_chunk_size: usize,
+}
+
+impl Default for ChunkingConfig {
+    fn default() -> Self {
+        ChunkingConfig {
+            chunk_size: 512,
+            chunk_overlap: 50,
+            min_chunk_size: 100,
+        }
+    }
+}
+
+// Add ChunkedDocument struct
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChunkedDocument {
+    pub id: String,
+    pub original_text: String,
+    pub chunks: Vec<TextChunk>,
+    pub metadata: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TextChunk {
+    pub chunk_id: String,
+    pub text: String,
+    pub shard: String,
+    pub start_pos: usize,
+    pub end_pos: usize,
+    pub vector_key: String,
+}
+
+// Search result with chunk info
+#[derive(Debug, Clone)]
+pub struct ChunkSearchResult {
+    pub document_id: String,
+    pub chunk_id: String,
+    pub text: String,
+    pub score: f32,
+    pub vector_score: f32,
+    pub keyword_score: f32,
+    pub combined_score: f32,
+    pub metadata: HashMap<String, String>,
+}
+
 /// Data distribution manager
 pub struct DataDistributionManager {
     shards: Arc<RwLock<Vec<ShardInfo>>>,
     stores: Arc<RwLock<HashMap<String, BlobStore>>>,
-    vector_stores: Arc<RwLock<HashMap<String, VectorStore>>>, // Add vector stores
+    vector_stores: Arc<RwLock<HashMap<String, VectorStore>>>,
+    search_stores: Arc<RwLock<HashMap<String, SearchableBlobStore>>>,
     strategy: Arc<RwLock<DistributionStrategy>>,
     round_robin_counter: Arc<AtomicUsize>,
     time_bucket_cache: Arc<RwLock<HashMap<String, String>>>,
     key_clusters: Arc<RwLock<HashMap<String, SimilarityCluster>>>,
     load_history: Arc<RwLock<VecDeque<HashMap<String, usize>>>>,
     adaptive_config: AdaptiveConfig,
+    chunk_config: Arc<RwLock<ChunkingConfig>>,
 }
 
 impl Clone for DataDistributionManager {
@@ -151,12 +204,14 @@ impl Clone for DataDistributionManager {
             shards: self.shards.clone(),
             stores: self.stores.clone(),
             vector_stores: self.vector_stores.clone(),
+            search_stores: self.search_stores.clone(), // Add this line
             strategy: self.strategy.clone(),
             round_robin_counter: self.round_robin_counter.clone(),
             time_bucket_cache: self.time_bucket_cache.clone(),
             key_clusters: self.key_clusters.clone(),
             load_history: self.load_history.clone(),
             adaptive_config: self.adaptive_config.clone(),
+            chunk_config: self.chunk_config.clone(), // Add this line
         }
     }
 }
@@ -173,6 +228,7 @@ impl DataDistributionManager {
         let mut shards = Vec::new();
         let mut stores = HashMap::new();
         let mut vector_stores = HashMap::new();
+        let mut search_stores = HashMap::new();
 
         for i in 0..4 {
             let shard_name = format!("shard_{}", i);
@@ -180,6 +236,7 @@ impl DataDistributionManager {
             std::fs::create_dir_all(&shard_path)?;
             let store = BlobStore::open(shard_path.join("data.redb"))?;
             let vector_store = VectorStore::open(shard_path.join("vectors.redb"))?;
+            let search_store = SearchableBlobStore::open(shard_path.join("search.redb"))?;
 
             shards.push(ShardInfo {
                 name: shard_name.clone(),
@@ -187,23 +244,26 @@ impl DataDistributionManager {
                 key_count: 0,
             });
             stores.insert(shard_name.clone(), store);
-            vector_stores.insert(shard_name, vector_store);
+            vector_stores.insert(shard_name.clone(), vector_store);
+            search_stores.insert(shard_name.clone(), search_store);
         }
 
         Ok(DataDistributionManager {
             shards: Arc::new(RwLock::new(shards)),
             stores: Arc::new(RwLock::new(stores)),
             vector_stores: Arc::new(RwLock::new(vector_stores)),
+            search_stores: Arc::new(RwLock::new(search_stores)),
             strategy: Arc::new(RwLock::new(strategy)),
             round_robin_counter: Arc::new(AtomicUsize::new(0)),
             time_bucket_cache: Arc::new(RwLock::new(HashMap::new())),
             key_clusters: Arc::new(RwLock::new(HashMap::new())),
             load_history: Arc::new(RwLock::new(VecDeque::new())),
             adaptive_config: AdaptiveConfig::default(),
+            chunk_config: Arc::new(RwLock::new(ChunkingConfig::default())),
         })
     }
 
-    /// Create with custom number of shards
+    // Update with_shards method
     pub fn with_shards<P: AsRef<Path>>(
         base_path: P,
         strategy: DistributionStrategy,
@@ -215,6 +275,7 @@ impl DataDistributionManager {
         let mut shards = Vec::new();
         let mut stores = HashMap::new();
         let mut vector_stores = HashMap::new();
+        let mut search_stores = HashMap::new();
 
         for i in 0..num_shards {
             let shard_name = format!("shard_{}", i);
@@ -222,6 +283,7 @@ impl DataDistributionManager {
             std::fs::create_dir_all(&shard_path)?;
             let store = BlobStore::open(shard_path.join("data.redb"))?;
             let vector_store = VectorStore::open(shard_path.join("vectors.redb"))?;
+            let search_store = SearchableBlobStore::open(shard_path.join("search.redb"))?;
 
             shards.push(ShardInfo {
                 name: shard_name.clone(),
@@ -229,19 +291,22 @@ impl DataDistributionManager {
                 key_count: 0,
             });
             stores.insert(shard_name.clone(), store);
-            vector_stores.insert(shard_name, vector_store);
+            vector_stores.insert(shard_name.clone(), vector_store);
+            search_stores.insert(shard_name.clone(), search_store);
         }
 
         Ok(DataDistributionManager {
             shards: Arc::new(RwLock::new(shards)),
             stores: Arc::new(RwLock::new(stores)),
             vector_stores: Arc::new(RwLock::new(vector_stores)),
+            search_stores: Arc::new(RwLock::new(search_stores)),
             strategy: Arc::new(RwLock::new(strategy)),
             round_robin_counter: Arc::new(AtomicUsize::new(0)),
             time_bucket_cache: Arc::new(RwLock::new(HashMap::new())),
             key_clusters: Arc::new(RwLock::new(HashMap::new())),
             load_history: Arc::new(RwLock::new(VecDeque::new())),
             adaptive_config: AdaptiveConfig::default(),
+            chunk_config: Arc::new(RwLock::new(ChunkingConfig::default())),
         })
     }
 
@@ -1424,6 +1489,374 @@ impl DataDistributionManager {
     pub fn shard_manager(&self) -> Arc<Self> {
         Arc::new(self.clone())
     }
+
+    /// Configure chunking parameters
+    pub fn set_chunk_config(&self, config: ChunkingConfig) {
+        *self.chunk_config.write() = config;
+    }
+
+    /// Split text into chunks
+    fn split_into_chunks(&self, text: &str) -> Vec<String> {
+        let config = self.chunk_config.read();
+        let mut chunks = Vec::new();
+        let mut start = 0;
+        let text_len = text.len();
+
+        while start < text_len {
+            let end = (start + config.chunk_size).min(text_len);
+            let mut chunk = text[start..end].to_string();
+
+            // Try to find a good breaking point (space, punctuation)
+            if end < text_len
+                && !chunk.ends_with(' ')
+                && !chunk.ends_with('.')
+                && !chunk.ends_with('!')
+                && !chunk.ends_with('?')
+            {
+                if let Some(last_space) = chunk.rfind(' ') {
+                    chunk = chunk[..last_space].to_string();
+                }
+            }
+
+            if chunk.len() >= config.min_chunk_size {
+                chunks.push(chunk);
+            }
+
+            start += config.chunk_size - config.chunk_overlap;
+        }
+
+        chunks
+    }
+
+    /// Store a document with chunking and distributed vector storage
+    pub fn store_chunked_document(
+        &self,
+        doc_id: &str,
+        text: &str,
+        metadata: HashMap<String, String>,
+    ) -> Result<ChunkedDocument, Box<dyn std::error::Error + Send + Sync>> {
+        let chunks = self.split_into_chunks(text);
+        let mut chunk_objects = Vec::new();
+
+        // Get round-robin counter start point
+        let start_counter = self
+            .round_robin_counter
+            .fetch_add(chunks.len(), Ordering::SeqCst);
+
+        for (idx, chunk_text) in chunks.into_iter().enumerate() {
+            // Distribute chunks across shards using round-robin
+            let shard_idx = (start_counter + idx) % self.shard_count();
+            let shard_name = self.get_all_shard_names()[shard_idx].clone();
+
+            let chunk_id = format!("{}_chunk_{}", doc_id, idx);
+            let vector_key = format!("vector:{}", chunk_id);
+
+            // Store vector embedding
+            {
+                let mut vector_stores = self.vector_stores.write();
+                if let Some(vector_store) = vector_stores.get_mut(&shard_name) {
+                    vector_store.insert_text(&vector_key, &chunk_text, Some("chunked_docs"))?;
+                }
+            }
+
+            // Store chunk text for keyword search
+            {
+                let mut search_stores = self.search_stores.write();
+                if let Some(search_store) = search_stores.get_mut(&shard_name) {
+                    search_store.put_text(&chunk_id, &chunk_text, Some("chunked_docs"))?;
+                }
+            }
+
+            chunk_objects.push(TextChunk {
+                chunk_id,
+                text: chunk_text,
+                shard: shard_name,
+                start_pos: idx * self.chunk_config.read().chunk_size,
+                end_pos: (idx + 1) * self.chunk_config.read().chunk_size,
+                vector_key,
+            });
+        }
+
+        let doc = ChunkedDocument {
+            id: doc_id.to_string(),
+            original_text: text.to_string(),
+            chunks: chunk_objects,
+            metadata,
+            created_at: Utc::now(),
+        };
+
+        // Store document metadata
+        let doc_key = format!("doc:{}", doc_id);
+        let serialized = serde_json::to_vec(&doc)?;
+
+        // Store in first shard (round-robin)
+        let shard_name = self.get_all_shard_names()[start_counter % self.shard_count()].clone();
+        let mut stores = self.stores.write();
+        if let Some(store) = stores.get_mut(&shard_name) {
+            store.put(&doc_key, &serialized, Some("chunked_docs"))?;
+        }
+
+        Ok(doc)
+    }
+    /// Retrieve a chunked document
+    pub fn get_chunked_document(
+        &self,
+        doc_id: &str,
+    ) -> Result<Option<ChunkedDocument>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let doc_key = format!("doc:{}", doc_id);
+
+        for store in stores.values() {
+            if let Some(data) = store.get(&doc_key)? {
+                let doc: ChunkedDocument = serde_json::from_slice(&data)?;
+                return Ok(Some(doc));
+            }
+        }
+
+        Ok(None)
+    }
+    /// Vector search across chunked documents
+    pub fn vector_search_chunks(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<ChunkSearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let vector_stores = self.vector_stores.read();
+        let search_stores = self.search_stores.read();
+        let mut all_results = Vec::new();
+
+        // Search in each shard
+        for (shard_name, vector_store) in vector_stores.iter() {
+            let results = vector_store.search_similar(query, limit)?;
+
+            for result in results {
+                // Extract chunk ID from vector key
+                if result.key.starts_with("vector:") {
+                    let chunk_id = result.key.replace("vector:", "");
+
+                    // Get the chunk text from search store
+                    let chunk_text = if let Some(search_store) = search_stores.get(shard_name) {
+                        if let Some(data) = search_store.get(&chunk_id)? {
+                            String::from_utf8_lossy(&data).to_string()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    // Extract document ID from chunk ID
+                    let doc_id = chunk_id
+                        .split("_chunk_")
+                        .next()
+                        .unwrap_or(&chunk_id)
+                        .to_string();
+
+                    all_results.push(ChunkSearchResult {
+                        document_id: doc_id,
+                        chunk_id,
+                        text: chunk_text,
+                        score: result.score,
+                        vector_score: result.score,
+                        keyword_score: 0.0,
+                        combined_score: result.score,
+                        metadata: HashMap::new(),
+                    });
+                }
+            }
+        }
+
+        // Sort by score and deduplicate by document (keep best chunk)
+        all_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        all_results.truncate(limit);
+
+        Ok(all_results)
+    }
+
+    /// Hybrid search across chunked documents (vector + keyword)
+    pub fn hybrid_search_chunks(
+        &self,
+        query: &str,
+        limit: usize,
+        vector_weight: f32,
+    ) -> Result<Vec<ChunkSearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let vector_stores = self.vector_stores.read();
+        let search_stores = self.search_stores.read();
+        let mut results_map: HashMap<String, ChunkSearchResult> = HashMap::new();
+
+        // Vector search
+        for (shard_name, vector_store) in vector_stores.iter() {
+            let vector_results = vector_store.search_similar(query, limit * 2)?;
+
+            for result in vector_results {
+                if result.key.starts_with("vector:") {
+                    let chunk_id = result.key.replace("vector:", "");
+                    let doc_id = chunk_id
+                        .split("_chunk_")
+                        .next()
+                        .unwrap_or(&chunk_id)
+                        .to_string();
+
+                    let chunk_text = if let Some(search_store) = search_stores.get(shard_name) {
+                        if let Some(data) = search_store.get(&chunk_id)? {
+                            String::from_utf8_lossy(&data).to_string()
+                        } else {
+                            String::new()
+                        }
+                    } else {
+                        String::new()
+                    };
+
+                    results_map.insert(
+                        chunk_id.clone(),
+                        ChunkSearchResult {
+                            document_id: doc_id,
+                            chunk_id,
+                            text: chunk_text,
+                            score: result.score,
+                            vector_score: result.score,
+                            keyword_score: 0.0,
+                            combined_score: result.score * vector_weight,
+                            metadata: HashMap::new(),
+                        },
+                    );
+                }
+            }
+        }
+
+        // Keyword search
+        for (_shard_name, search_store) in search_stores.iter() {
+            let keyword_results = search_store.search(query, limit * 2)?;
+
+            for result in keyword_results {
+                let chunk_id = result.key.clone();
+                let doc_id = chunk_id
+                    .split("_chunk_")
+                    .next()
+                    .unwrap_or(&chunk_id)
+                    .to_string();
+
+                let entry = results_map
+                    .entry(chunk_id.clone())
+                    .or_insert(ChunkSearchResult {
+                        document_id: doc_id,
+                        chunk_id,
+                        text: String::new(),
+                        score: 0.0,
+                        vector_score: 0.0,
+                        keyword_score: 0.0,
+                        combined_score: 0.0,
+                        metadata: HashMap::new(),
+                    });
+
+                let keyword_score = (result.score as f32 / 10.0).min(1.0);
+                entry.keyword_score = keyword_score;
+                entry.combined_score =
+                    (entry.vector_score * vector_weight) + (keyword_score * (1.0 - vector_weight));
+                entry.score = entry.combined_score;
+
+                // Get chunk text if not already set
+                if entry.text.is_empty() {
+                    if let Some(data) = search_store.get(&entry.chunk_id)? {
+                        entry.text = String::from_utf8_lossy(&data).to_string();
+                    }
+                }
+            }
+        }
+
+        // Convert to vector and sort
+        let mut results: Vec<ChunkSearchResult> = results_map.into_values().collect();
+        results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
+        results.truncate(limit);
+
+        Ok(results)
+    }
+
+    /// Search chunks by document ID
+    pub fn search_chunks_by_document(
+        &self,
+        doc_id: &str,
+    ) -> Result<Vec<TextChunk>, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(doc) = self.get_chunked_document(doc_id)? {
+            Ok(doc.chunks)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+    /// Delete a chunked document and all its chunks
+    pub fn delete_chunked_document(
+        &self,
+        doc_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(doc) = self.get_chunked_document(doc_id)? {
+            // Delete all chunks
+            for chunk in &doc.chunks {
+                // Delete vector embedding
+                if let Some(_shard_name) = chunk.vector_key.split("vector:").nth(1) {
+                    // This would require implementing delete in VectorStore
+                }
+
+                // Delete chunk from search store
+                let mut search_stores = self.search_stores.write();
+                if let Some(search_store) = search_stores.get_mut(&chunk.shard) {
+                    let _ = search_store.remove(&chunk.chunk_id);
+                }
+            }
+
+            // Delete document metadata
+            let doc_key = format!("doc:{}", doc_id);
+            let mut stores = self.stores.write();
+            for store in stores.values_mut() {
+                if store.exists(&doc_key)? {
+                    return Ok(store.remove(&doc_key)?);
+                }
+            }
+
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+    /// Get chunk statistics
+    pub fn get_chunk_statistics(
+        &self,
+    ) -> Result<ChunkStatistics, Box<dyn std::error::Error + Send + Sync>> {
+        let config = self.chunk_config.read();
+        let mut total_documents = 0;
+        let mut total_chunks = 0;
+        let mut chunks_per_shard: HashMap<String, usize> = HashMap::new();
+
+        let stores = self.stores.read();
+        for store in stores.values() {
+            let keys = store.list_keys()?;
+            for key in keys {
+                if key.starts_with("doc:") {
+                    total_documents += 1;
+                    if let Some(data) = store.get(&key)? {
+                        if let Ok(doc) = serde_json::from_slice::<ChunkedDocument>(&data) {
+                            total_chunks += doc.chunks.len();
+                            for chunk in doc.chunks {
+                                *chunks_per_shard.entry(chunk.shard).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(ChunkStatistics {
+            total_documents,
+            total_chunks,
+            avg_chunks_per_doc: if total_documents > 0 {
+                total_chunks as f64 / total_documents as f64
+            } else {
+                0.0
+            },
+            chunks_per_shard,
+            chunk_size: config.chunk_size,
+            chunk_overlap: config.chunk_overlap,
+        })
+    }
 }
 
 // Helper function for Levenshtein distance
@@ -1464,4 +1897,14 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
     }
 
     matrix[a_len][b_len]
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkStatistics {
+    pub total_documents: usize,
+    pub total_chunks: usize,
+    pub avg_chunks_per_doc: f64,
+    pub chunks_per_shard: HashMap<String, usize>,
+    pub chunk_size: usize,
+    pub chunk_overlap: usize,
 }
