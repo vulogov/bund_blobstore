@@ -71,8 +71,9 @@ pub use distributed_graph::{
 pub use graph_algorithms::{CycleDetectionResult, GraphAlgorithms, LongestPathResult};
 
 pub use data_distribution::{
-    AdaptiveConfig, DataDistributionManager, DistributionStats, DistributionStrategy,
-    SimilarityCluster, SimilarityConfig, TimeBucketConfig, TimeBucketSize,
+    AdaptiveConfig, BucketStats, ChunkSearchResult, ChunkStatistics, ChunkedDocument,
+    ChunkingConfig, DataDistributionManager, DistributionStats, DistributionStrategy, ShardInfo,
+    SimilarityCluster, SimilarityConfig, TextChunk, TimeBucketConfig, TimeBucketSize,
 };
 
 pub fn version() -> String {

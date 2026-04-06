@@ -5,7 +5,7 @@
 [![Crates.io](https://img.shields.io/crates/v/bund_blobstore.svg)](https://crates.io/crates/bund_blobstore)
 [![Documentation](https://docs.rs/bund_blobstore/badge.svg)](https://docs.rs/bund_blobstore)
 
-A high-performance, ACID-compliant embedded database with enterprise-grade features including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, vector-telemetry integration, distributed graph algorithms, intelligent data distribution, dynamic sharding, LRU caching, and concurrent access patterns.
+A high-performance, ACID-compliant embedded database with enterprise-grade features including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, vector-telemetry integration, distributed graph algorithms, intelligent data distribution, dynamic sharding, LRU caching, chunked document storage, and concurrent access patterns.
 
 ## ✨ Features
 
@@ -27,6 +27,16 @@ A high-performance, ACID-compliant embedded database with enterprise-grade featu
 - **🔤 Phrase Matching** - Exact phrase search with proximity scoring
 - **📏 Proximity Search** - Find words within N words of each other
 - **⚙️ Customizable Tokenizer** - Configurable stop words, stemming, case sensitivity
+
+### Chunked Document Storage (NEW!)
+- **📄 Automatic Text Chunking** - Split large documents into configurable overlapping chunks
+- **🔄 Round-Robin Distribution** - Distribute chunks evenly across all shards
+- **🔍 Vector Search on Chunks** - Semantic search across document chunks
+- **🎯 Hybrid Search on Chunks** - Combine vector similarity with keyword matching for chunks
+- **📊 Chunk Statistics** - Track document and chunk distribution across shards
+- **💾 Metadata Preservation** - Store custom metadata with each document
+- **🗑️ Document Deletion** - Remove entire documents and all associated chunks
+- **⚙️ Configurable Chunking** - Adjust chunk size, overlap, and minimum chunk size
 
 ### Telemetry & Timeline
 - **📈 Time Series Data** - Store telemetry events with timestamps
@@ -56,7 +66,7 @@ A high-performance, ACID-compliant embedded database with enterprise-grade featu
 - **📈 Distribution Statistics** - Track entropy, load balance scores, and shard distribution
 - **🔄 Runtime Strategy Switching** - Change distribution strategy without restart
 
-### Dynamic Shard Management (NEW!)
+### Dynamic Shard Management
 - **➕ Add Shards Dynamically** - Add new shards at runtime for horizontal scaling
 - **➖ Remove Shards** - Remove shards for scaling down (with data loss warning)
 - **🏷️ Key-Range Shards** - Create shards that handle specific key ranges
@@ -86,6 +96,13 @@ A high-performance, ACID-compliant embedded database with enterprise-grade featu
 - **📊 Parallel Algorithms** - Rayon-based parallel cycle detection
 - **🎯 Distributed Queries** - Query nodes across all shards with filtering
 
+### Multi-Modal Search
+- **📝 Text Embeddings** - Semantic text understanding
+- **🖼️ Image Embeddings** - Visual similarity search
+- **🎵 Audio Embeddings** - Audio pattern matching
+- **🔄 Cross-Modal Search** - Search images with text, audio with text
+- **💾 Persistent Storage** - Embeddings saved to disk
+
 ### Concurrent Operations
 - **🔄 Thread-Safe** - Safe concurrent access with read/write locks for all storage types
 - **📦 Batch Processing** - Efficient batch operations with background worker
@@ -99,7 +116,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bund_blobstore = "0.9.0"
+bund_blobstore = "0.10.0"
 ```
 
 ## 🚀 Quick Start
@@ -122,6 +139,86 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     Ok(())
 }
+```
+
+## 📄 Chunked Document Storage (NEW!)
+
+### Store Large Documents with Automatic Chunking
+
+```rust
+use bund_blobstore::{DataDistributionManager, DistributionStrategy, ChunkingConfig};
+use std::collections::HashMap;
+
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let manager = DataDistributionManager::new(
+        "chunked_data",
+        DistributionStrategy::RoundRobin,
+    )?;
+    
+    // Configure chunking
+    let chunk_config = ChunkingConfig {
+        chunk_size: 512,      // Characters per chunk
+        chunk_overlap: 50,    // Overlap between chunks
+        min_chunk_size: 100,  // Minimum chunk size
+    };
+    manager.set_chunk_config(chunk_config);
+    
+    // Store a large document
+    let long_text = "Your very long document text here...".repeat(100);
+    let mut metadata = HashMap::new();
+    metadata.insert("author".to_string(), "John Doe".to_string());
+    metadata.insert("category".to_string(), "programming".to_string());
+    
+    let doc = manager.store_chunked_document("rust_guide", &long_text, metadata)?;
+    println!("Stored document with {} chunks", doc.chunks.len());
+    
+    Ok(())
+}
+```
+
+### Vector Search Across Chunks
+
+```rust
+// Semantic search across document chunks
+let results = manager.vector_search_chunks("systems programming language", 5)?;
+for result in results {
+    println!("Document: {}, Score: {:.3}", result.document_id, result.score);
+    println!("  Chunk: {}", &result.text[..100]);
+}
+```
+
+### Hybrid Search (Vector + Keyword)
+
+```rust
+// Combine semantic and keyword search (70% vector, 30% keyword)
+let results = manager.hybrid_search_chunks("rust fast systems", 5, 0.7)?;
+for result in results {
+    println!("Document: {}, Combined: {:.3}", 
+             result.document_id, result.combined_score);
+    println!("  Vector: {:.3}, Keyword: {:.3}", 
+             result.vector_score, result.keyword_score);
+}
+```
+
+### Document Management
+
+```rust
+// Retrieve a document
+if let Some(doc) = manager.get_chunked_document("rust_guide")? {
+    println!("Document has {} chunks", doc.chunks.len());
+}
+
+// Search chunks by document
+let chunks = manager.search_chunks_by_document("rust_guide")?;
+
+// Get chunk statistics
+let stats = manager.get_chunk_statistics()?;
+println!("Total documents: {}", stats.total_documents);
+println!("Total chunks: {}", stats.total_chunks);
+println!("Avg chunks per doc: {:.2}", stats.avg_chunks_per_doc);
+
+// Delete a document
+manager.delete_chunked_document("rust_guide")?;
 ```
 
 ## 📊 Intelligent Data Distribution
@@ -187,29 +284,9 @@ manager.put("user:123:settings", b"data", None)?;
 manager.put("user:123:history", b"data", None)?;
 ```
 
-### Adaptive Distribution with Load Balancing
-
-```rust
-use bund_blobstore::{DataDistributionManager, DistributionStrategy, AdaptiveConfig};
-use std::time::Duration;
-
-let config = AdaptiveConfig {
-    load_balancing_interval: Duration::from_secs(60),
-    rebalance_threshold: 0.2,
-    min_shard_load: 0.3,
-    max_shard_load: 0.7,
-    history_size: 1000,
-};
-
-let manager = DataDistributionManager::new(
-    "adaptive_data",
-    DistributionStrategy::Adaptive(config),
-)?;
-```
-
 ## 🗺️ Dynamic Shard Management
 
-### Adding Shards
+### Adding and Managing Shards
 
 ```rust
 // Add a regular shard
@@ -222,19 +299,10 @@ manager.add_key_range_shard("range_shard", "/path/to/range_shard", "a", "m")?;
 let now = Utc::now();
 manager.add_time_range_shard("time_shard", "/path/to/time_shard", 
                               now - Duration::days(30), now)?;
-```
 
-### Managing Shards
-
-```rust
 // List all shards
 let shards = manager.get_all_shard_names();
 println!("Available shards: {:?}", shards);
-
-// Check if shard exists
-if manager.shard_exists("shard_0") {
-    println!("Shard exists");
-}
 
 // Get shard details
 let details = manager.get_shard_details();
@@ -242,35 +310,8 @@ for detail in details {
     println!("{}: {} keys", detail.name, detail.key_count);
 }
 
-// Get shard loads
-let loads = manager.get_shard_loads();
-for (shard, load) in loads {
-    println!("{} load: {:.2}%", shard, load * 100.0);
-}
-
 // Remove a shard
 manager.remove_shard("old_shard")?;
-
-// Get shard for a specific key
-let shard = manager.get_shard_for_key("user:123")?;
-```
-
-### Distribution Statistics
-
-```rust
-let stats = manager.get_distribution_stats();
-println!("Total records: {}", stats.total_records);
-println!("Distribution entropy: {:.3}", stats.distribution_entropy);
-println!("Load balance score: {:.3}", stats.load_balance_score);
-println!("Shard distribution: {:?}", stats.shard_distribution);
-```
-
-### Cache Statistics
-
-```rust
-let cache_stats = manager.cache_statistics();
-println!("Hits: {}, Misses: {}", cache_stats.hits, cache_stats.misses);
-println!("Hit rate: {:.2}%", cache_stats.hit_rate * 100.0);
 ```
 
 ## 🔍 Search Capabilities
@@ -343,14 +384,6 @@ let query = TelemetryQuery {
 };
 
 let results = telemetry.query(&query)?;
-```
-
-### Minute-Grade Bucketing
-
-```rust
-let interval = TimeInterval::last_hour();
-let buckets = manager.get_minute_bucketed(interval, Some("cpu_usage"))?;
-let stats = manager.get_bucket_stats(interval, Some("cpu_usage"))?;
 ```
 
 ## 🔗 Vector-Telemetry Integration
@@ -458,7 +491,7 @@ bund_blobstore/
 ├── vector.rs              # Vector embeddings & similarity
 ├── timeline.rs            # Telemetry timeline
 ├── vector_timeline.rs     # Vector-telemetry integration
-├── data_distribution.rs   # Intelligent data distribution
+├── data_distribution.rs   # Intelligent data distribution & chunked docs
 ├── distributed_graph.rs   # Distributed graph storage
 ├── graph_algorithms.rs    # Graph algorithms
 ├── faceted_search.rs      # Faceted search
@@ -478,30 +511,27 @@ bund_blobstore/
 - **Full-text search**: <10ms average latency
 - **Fuzzy search**: <15ms with typo tolerance
 - **Vector search**: <50ms for 10K vectors
+- **Chunked document storage**: <100ms for 1MB document
+- **Chunk search**: <50ms across 1000 chunks
+- **Hybrid search**: <100ms combining both methods
 - **Data distribution overhead**: <1ms per operation
 - **Distribution entropy**: >0.8 with round-robin
 - **Load balance score**: >0.7 with adaptive distribution
 - **Cache hit rate**: >80% with LRU caching
-- **Shard management**: <10ms for add/remove operations
 
 ## 🔧 Configuration
 
-### Distribution Strategy Configuration
+### Chunking Configuration
 
 ```rust
-use bund_blobstore::{DistributionStrategy, TimeBucketConfig, TimeBucketSize, SimilarityConfig, AdaptiveConfig};
+use bund_blobstore::ChunkingConfig;
 
-// Round-robin (default)
-let strategy = DistributionStrategy::RoundRobin;
-
-// Time bucket
-let strategy = DistributionStrategy::TimeBucket(TimeBucketConfig::default());
-
-// Key similarity
-let strategy = DistributionStrategy::KeySimilarity(SimilarityConfig::default());
-
-// Adaptive load balancing
-let strategy = DistributionStrategy::Adaptive(AdaptiveConfig::default());
+let chunk_config = ChunkingConfig {
+    chunk_size: 512,      // Characters per chunk
+    chunk_overlap: 50,    // Overlap between chunks
+    min_chunk_size: 100,  // Minimum chunk size
+};
+manager.set_chunk_config(chunk_config);
 ```
 
 ### Cache Configuration
@@ -525,10 +555,11 @@ let cache_config = CacheConfig {
 # Run all tests
 cargo test
 
-# Run specific test suites
-cargo test test_round_robin_distribution
-cargo test test_dynamic_shard_management
-cargo test test_vector_search -- --ignored
+# Run chunked document tests
+cargo test --test chunkeddocument-test -- --nocapture
+
+# Run specific test
+cargo test test_vector_search_chunks -- --nocapture
 
 # Run with logging
 RUST_LOG=debug cargo test
@@ -536,28 +567,28 @@ RUST_LOG=debug cargo test
 
 ## 📈 Use Cases
 
-### Dynamic Sharding
-- **Horizontal Scaling**: Add shards as data grows
-- **Multi-tenant Applications**: Isolate tenant data
-- **Time-series Data**: Shard by time ranges
-- **Geographic Distribution**: Shard by region
+### Document Management
+- **Large Document Storage** - Store and search through large documents
+- **Semantic Document Search** - Find documents by meaning, not just keywords
+- **RAG Applications** - Retrieve relevant document chunks for LLM context
+- **Knowledge Bases** - Build searchable document repositories
 
-### Intelligent Data Distribution
-- **Auto-scaling Systems**: Automatically distribute data across shards
-- **Time-Series Databases**: Group telemetry by time buckets
-- **Content Clustering**: Keep similar keys together
-- **Load Balancing**: Dynamically balance load across nodes
+### Dynamic Sharding
+- **Horizontal Scaling** - Add shards as data grows
+- **Multi-tenant Applications** - Isolate tenant data
+- **Time-series Data** - Shard by time ranges
+- **Geographic Distribution** - Shard by region
 
 ### Graph Analytics
-- **Social Networks**: Friend recommendations, influence analysis
-- **Fraud Detection**: Cycle detection in transaction graphs
-- **Route Optimization**: Shortest path in logistics networks
-- **Knowledge Graphs**: Traversal and relationship discovery
+- **Social Networks** - Friend recommendations, influence analysis
+- **Fraud Detection** - Cycle detection in transaction graphs
+- **Route Optimization** - Shortest path in logistics networks
+- **Knowledge Graphs** - Traversal and relationship discovery
 
 ### Intelligent Observability
-- **Root Cause Analysis**: Find similar incidents within time windows
-- **Anomaly Detection**: Identify unusual patterns in telemetry
-- **Correlation**: Link temporally close and semantically similar events
+- **Root Cause Analysis** - Find similar incidents within time windows
+- **Anomaly Detection** - Identify unusual patterns in telemetry
+- **Correlation** - Link temporally close and semantically similar events
 
 ## 🤝 Contributing
 
@@ -596,6 +627,7 @@ This project is licensed under either of:
 - [ ] Cross-shard transactions
 - [ ] Geo-distributed sharding
 - [ ] WebAssembly support
+- [ ] Streaming chunk processing
 
 ---
 

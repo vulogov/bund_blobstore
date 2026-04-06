@@ -1,5 +1,4 @@
-use bund_blobstore::{AdaptiveConfig, DataDistributionManager, DistributionStrategy};
-use chrono::{Duration, Utc};
+use bund_blobstore::{DataDistributionManager, DistributionStrategy};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration as StdDuration;
