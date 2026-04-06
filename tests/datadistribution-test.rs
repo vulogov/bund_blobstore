@@ -231,7 +231,7 @@ fn test_time_vector_search() -> Result<(), Box<dyn std::error::Error + Send + Sy
 
     let results = manager.search_vector_time(&query)?;
     // May return 0 or more results depending on model
-    assert!(results.len() >= 0);
+    assert!(!results.is_empty());
 
     Ok(())
 }

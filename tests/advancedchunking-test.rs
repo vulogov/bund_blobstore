@@ -102,7 +102,7 @@ fn test_paragraph_boundary_chunking() -> Result<(), Box<dyn std::error::Error + 
     // Verify chunks respect paragraph boundaries
     for chunk in &doc.chunks {
         println!("Chunk paragraph index: {}", chunk.paragraph_index);
-        assert!(chunk.paragraph_index >= 0);
+        assert!(chunk.paragraph_index == 0 || chunk.paragraph_index > 0);
     }
 
     Ok(())
@@ -284,7 +284,7 @@ fn test_statistics_calculation() -> Result<(), Box<dyn std::error::Error + Send 
 
     assert!(doc.word_count > 0);
     assert!(doc.sentence_count > 0);
-    assert!(doc.paragraph_count >= 0);
+    assert!(doc.paragraph_count > 0);
     assert!(doc.chunks.len() > 0);
 
     Ok(())
@@ -441,7 +441,7 @@ fn test_multiple_languages_stemming() -> Result<(), Box<dyn std::error::Error + 
         (StemmingLanguage::German, "laufend läuft schnell", "lauf"),
     ];
 
-    for (lang, text, expected_stem) in languages {
+    for (lang, text, _expected_stem) in languages {
         let config = AdvancedChunkingConfig {
             chunk_size: 200,
             chunk_overlap: 20,

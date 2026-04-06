@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod blobstore;
+pub mod common;
 pub mod concurrent;
 pub mod data_distribution;
 pub mod distributed_graph;
