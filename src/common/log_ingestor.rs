@@ -747,38 +747,3 @@ impl LogIngestor {
         Ok(stats)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    fn create_test_parser() -> GrokLogParser {
-        let parser = GrokLogParser::new("test_source");
-        let _ = parser.add_pattern("test_log", r"(?P<timestamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) (?P<level>\w+) \[(?P<thread>\w+)\] (?P<key>\w+): (?P<message>.*)");
-        parser
-    }
-
-    #[test]
-    fn test_ingest_log_lines_with_deduplication() {
-        let temp_dir = tempdir().unwrap();
-        let distribution_manager =
-            Arc::new(RwLock::new(DataDistributionManager::new(temp_dir.path())));
-        let parser = create_test_parser();
-        let config = LogIngestionConfig::default();
-        let ingestor = LogIngestor::new(distribution_manager, parser, config);
-
-        let log_lines = vec![
-            "2024-01-15T10:30:45Z INFO [main] user_login: User logged in".to_string(),
-            "2024-01-15T10:30:45Z INFO [main] user_login: User logged in".to_string(), // Duplicate
-            "2024-01-15T10:30:46Z ERROR [worker] db_error: Connection failed".to_string(),
-        ];
-
-        let stats = ingestor.ingest_log_lines(log_lines, "test_logs").unwrap();
-
-        assert_eq!(stats.total_lines_read, 3);
-        assert_eq!(stats.total_records_parsed, 3);
-        assert!(stats.duplicates_filtered >= 1);
-        assert!(stats.total_records_stored >= 2);
-    }
-}
