@@ -1976,6 +1976,7 @@ impl DataDistributionManager {
     ) -> Vec<EnhancedTextChunk> {
         let mut chunks = Vec::new();
         let mut paragraphs: Vec<&str> = Vec::new();
+        let text_len = text.len();
 
         // Split into paragraphs
         if config.break_on_paragraphs {
@@ -1989,7 +1990,7 @@ impl DataDistributionManager {
         let sentence_regex = Regex::new(r"[.!?]+[\s\n]+").unwrap();
 
         for (para_idx, paragraph) in paragraphs.iter().enumerate() {
-            let _para_start = global_pos; // Prefix with underscore to fix warning
+            let para_start = global_pos;
 
             // Split paragraph into sentences
             let sentences: Vec<&str> = if config.break_on_sentences {
@@ -1999,7 +2000,7 @@ impl DataDistributionManager {
             };
 
             let mut current_chunk = String::new();
-            let mut chunk_start_pos = global_pos;
+            let mut chunk_start_pos = para_start;
             let mut chunk_start_sentence = sentence_index;
 
             for sentence in sentences {
@@ -2009,22 +2010,30 @@ impl DataDistributionManager {
                     && !current_chunk.is_empty()
                 {
                     // Create chunk with context
-                    let chunk_end_pos = global_pos;
+                    let chunk_end_pos = chunk_start_pos + current_chunk.len();
 
-                    // Calculate context windows
+                    // Calculate context windows safely
                     let context_start = if chunk_start_pos > config.context_before_chars {
                         chunk_start_pos - config.context_before_chars
                     } else {
                         0
                     };
-                    let context_end = if chunk_end_pos + config.context_after_chars < text.len() {
+                    let context_end = if chunk_end_pos + config.context_after_chars < text_len {
                         chunk_end_pos + config.context_after_chars
                     } else {
-                        text.len()
+                        text_len
                     };
 
-                    let context_before = text[context_start..chunk_start_pos].to_string();
-                    let context_after = text[chunk_end_pos..context_end].to_string();
+                    let context_before = if context_start < chunk_start_pos {
+                        text[context_start..chunk_start_pos].to_string()
+                    } else {
+                        String::new()
+                    };
+                    let context_after = if chunk_end_pos < context_end {
+                        text[chunk_end_pos..context_end].to_string()
+                    } else {
+                        String::new()
+                    };
 
                     let stemmed_text = if config.enable_stemming {
                         Some(self.stem_text(&current_chunk, config.language))
@@ -2055,7 +2064,7 @@ impl DataDistributionManager {
                         0
                     };
                     current_chunk = current_chunk[overlap_start..].to_string();
-                    chunk_start_pos = chunk_end_pos - current_chunk.len();
+                    chunk_start_pos = chunk_end_pos - (current_chunk.len());
                     chunk_start_sentence = sentence_index;
                 }
 
@@ -2069,21 +2078,29 @@ impl DataDistributionManager {
 
             // Add last chunk
             if !current_chunk.is_empty() && current_chunk.len() >= config.min_chunk_size {
-                let chunk_end_pos = global_pos;
+                let chunk_end_pos = chunk_start_pos + current_chunk.len();
 
                 let context_start = if chunk_start_pos > config.context_before_chars {
                     chunk_start_pos - config.context_before_chars
                 } else {
                     0
                 };
-                let context_end = if chunk_end_pos + config.context_after_chars < text.len() {
+                let context_end = if chunk_end_pos + config.context_after_chars < text_len {
                     chunk_end_pos + config.context_after_chars
                 } else {
-                    text.len()
+                    text_len
                 };
 
-                let context_before = text[context_start..chunk_start_pos].to_string();
-                let context_after = text[chunk_end_pos..context_end].to_string();
+                let context_before = if context_start < chunk_start_pos {
+                    text[context_start..chunk_start_pos].to_string()
+                } else {
+                    String::new()
+                };
+                let context_after = if chunk_end_pos < context_end {
+                    text[chunk_end_pos..context_end].to_string()
+                } else {
+                    String::new()
+                };
 
                 let stemmed_text = if config.enable_stemming {
                     Some(self.stem_text(&current_chunk, config.language))
