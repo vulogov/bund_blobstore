@@ -413,9 +413,7 @@ parser.process_log_line(log_line)?;
 
 ## See Also
 
-- [Telemetry Timeline Documentation](./timeline.md)
-- [Error Handling Guide](./error-handling.md)
-- [Performance Tuning](./performance.md)
+
 ```
 
 This documentation provides comprehensive coverage of the Grok integration module with practical examples and best practices for integrating it into your applications.
