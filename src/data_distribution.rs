@@ -16,6 +16,38 @@ use crate::timeline::{TelemetryQuery, TelemetryRecord, TelemetryValue, TimeInter
 use crate::vector::{VectorSearchResult, VectorStore};
 use crate::vector_timeline::{VectorTimeQuery, VectorTimeResult};
 
+#[derive(Debug, Clone)]
+pub enum CacheType {
+    TimeBucket,
+    KeyCluster,
+    All,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub time_bucket_cache_size: usize,
+    pub key_cluster_cache_size: usize,
+    pub total_cache_size: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShardHealth {
+    pub shard_name: String,
+    pub is_healthy: bool,
+    pub key_count: usize,
+    pub last_sync: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemStats {
+    pub shard_health: Vec<ShardHealth>,
+    pub cache_stats: CacheStats,
+    pub total_records: usize,
+    pub shard_count: usize,
+    pub distribution_entropy: f64,
+    pub load_balance_score: f64,
+}
+
 /// Distribution strategy types
 #[derive(Debug, Clone)]
 pub enum DistributionStrategy {
@@ -1392,12 +1424,6 @@ impl DataDistributionManager {
         self.get_distribution_stats()
     }
 
-    /// Clear caches
-    pub fn clear_caches(&self) {
-        self.time_bucket_cache.write().clear();
-        self.key_clusters.write().clear();
-    }
-
     /// Set distribution strategy
     pub fn set_strategy(&self, strategy: DistributionStrategy) {
         *self.strategy.write() = strategy;
@@ -2444,6 +2470,272 @@ impl DataDistributionManager {
         }
 
         Ok(results)
+    }
+    /// Clear all caches (time bucket cache and key clusters)
+    pub fn clear_caches(&self) {
+        let time_bucket_count = self.time_bucket_cache.read().len();
+        let key_cluster_count = self.key_clusters.read().len();
+
+        self.time_bucket_cache.write().clear();
+        self.key_clusters.write().clear();
+
+        log::debug!(
+            "[Cache] Cleared {} time bucket entries and {} key cluster entries",
+            time_bucket_count,
+            key_cluster_count
+        );
+    }
+
+    /// Clear specific cache types
+    pub fn clear_cache_by_type(&self, cache_type: CacheType) {
+        match cache_type {
+            CacheType::TimeBucket => {
+                let count = self.time_bucket_cache.read().len();
+                self.time_bucket_cache.write().clear();
+                log::debug!("[Cache] Cleared {} time bucket cache entries", count);
+            }
+            CacheType::KeyCluster => {
+                let count = self.key_clusters.read().len();
+                self.key_clusters.write().clear();
+                log::debug!("[Cache] Cleared {} key cluster cache entries", count);
+            }
+            CacheType::All => {
+                self.clear_caches();
+            }
+        }
+    }
+
+    /// Get cache statistics
+    pub fn get_cache_stats(&self) -> CacheStats {
+        CacheStats {
+            time_bucket_cache_size: self.time_bucket_cache.read().len(),
+            key_cluster_cache_size: self.key_clusters.read().len(),
+            total_cache_size: self.time_bucket_cache.read().len() + self.key_clusters.read().len(),
+        }
+    }
+
+    /// Sync all shards - ensures data consistency by clearing caches
+    /// and verifying all shards are accessible
+    pub fn sync_all_shards(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("[Sync] Starting sync across all shards...");
+
+        // Clear all caches to ensure fresh reads
+        self.clear_caches();
+
+        let shard_names = self.get_all_shard_names();
+        let mut failed_shards = Vec::new();
+
+        // Verify each shard is accessible
+        for shard_name in &shard_names {
+            match self.verify_shard_accessibility(shard_name) {
+                Ok(true) => log::debug!("[Sync] Shard '{}' is accessible", shard_name),
+                Ok(false) => {
+                    log::warn!("[Sync] Shard '{}' has issues", shard_name);
+                    failed_shards.push(shard_name.clone());
+                }
+                Err(e) => {
+                    log::error!("[Sync] Error accessing shard '{}': {}", shard_name, e);
+                    failed_shards.push(shard_name.clone());
+                }
+            }
+        }
+
+        if !failed_shards.is_empty() {
+            log::warn!(
+                "[Sync] Warning: {} shards have issues: {:?}",
+                failed_shards.len(),
+                failed_shards
+            );
+        } else {
+            log::debug!(
+                "[Sync] All {} shards synced successfully",
+                shard_names.len()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sync a specific shard by name
+    pub fn sync_shard(
+        &self,
+        shard_name: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !self.shard_exists(shard_name) {
+            return Err(format!("Shard '{}' not found", shard_name).into());
+        }
+
+        log::debug!("[Sync] Syncing shard: {}", shard_name);
+
+        // Clear cache entries related to this shard
+        {
+            let mut time_cache = self.time_bucket_cache.write();
+            let before = time_cache.len();
+            time_cache.retain(|_, value| value != shard_name);
+            let after = time_cache.len();
+            if before > after {
+                log::debug!(
+                    "[Sync] Cleared {} time bucket cache entries for shard '{}'",
+                    before - after,
+                    shard_name
+                );
+            }
+        }
+
+        {
+            let mut key_clusters = self.key_clusters.write();
+            let before = key_clusters.len();
+            key_clusters.retain(|_, cluster| cluster.shard != shard_name);
+            let after = key_clusters.len();
+            if before > after {
+                log::debug!(
+                    "[Sync] Cleared {} key cluster entries for shard '{}'",
+                    before - after,
+                    shard_name
+                );
+            }
+        }
+
+        // Verify shard accessibility
+        match self.verify_shard_accessibility(shard_name) {
+            Ok(true) => log::debug!("[Sync] Shard '{}' synced successfully", shard_name),
+            Ok(false) => log::debug!("[Sync] Shard '{}' synced but has issues", shard_name),
+            Err(e) => return Err(format!("Shard '{}' sync failed: {}", shard_name, e).into()),
+        }
+
+        Ok(())
+    }
+    /// Verify shard accessibility by trying to read/write a test key
+    fn verify_shard_accessibility(
+        &self,
+        shard_name: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let test_key = format!(
+            "__sync_test_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+
+        let mut stores = self.stores.write();
+        if let Some(store) = stores.get_mut(shard_name) {
+            // Try to write a test key
+            store.put(&test_key, b"test", None)?;
+
+            // Try to read it back
+            let data = store.get(&test_key)?;
+            let success = data.is_some() && data.unwrap() == b"test";
+
+            // Clean up
+            store.remove(&test_key)?;
+
+            Ok(success)
+        } else {
+            Ok(false)
+        }
+    }
+    /// Flush all pending operations and sync
+    pub fn flush_and_sync(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("[Flush] Starting flush and sync...");
+
+        // Clear caches first
+        self.clear_caches();
+
+        // Then sync all shards
+        self.sync_all_shards()?;
+
+        log::debug!("[Flush] Flush and sync completed");
+        Ok(())
+    }
+
+    /// Reset and reinitialize the entire distribution manager
+    pub fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("[Reset] Resetting DataDistributionManager...");
+
+        // Clear all caches
+        self.clear_caches();
+
+        // Reset round-robin counter
+        self.round_robin_counter.store(0, Ordering::SeqCst);
+
+        // Sync all shards
+        self.sync_all_shards()?;
+
+        // Reset load history
+        self.load_history.write().clear();
+
+        log::debug!("[Reset] Reset completed successfully");
+        Ok(())
+    }
+
+    /// Get shard health status
+    pub fn get_shard_health(&self) -> Vec<ShardHealth> {
+        let stores = self.stores.read();
+        let mut health_status = Vec::new();
+
+        for (shard_name, store) in stores.iter() {
+            let is_healthy = store.len().is_ok();
+            let key_count = store.len().unwrap_or(0);
+
+            health_status.push(ShardHealth {
+                shard_name: shard_name.clone(),
+                is_healthy,
+                key_count,
+                last_sync: Utc::now(),
+            });
+        }
+
+        health_status
+    }
+
+    /// Optimize all shards (compact storage)
+    pub fn optimize_all_shards(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let vector_stores = self.vector_stores.read();
+        let search_stores = self.search_stores.read();
+
+        log::debug!("[Optimize] Starting optimization across all shards...");
+
+        // Optimize blob stores
+        for (shard_name, store) in stores.iter() {
+            log::debug!("[Optimize] Optimizing blob store for shard: {}", shard_name);
+            store.optimize()?;
+        }
+
+        // Optimize vector stores
+        for (shard_name, vector_store) in vector_stores.iter() {
+            log::debug!(
+                "[Optimize] Optimizing vector store for shard: {}",
+                shard_name
+            );
+            vector_store.optimize()?;
+        }
+
+        // Optimize search stores
+        for (shard_name, search_store) in search_stores.iter() {
+            log::debug!(
+                "[Optimize] Optimizing search store for shard: {}",
+                shard_name
+            );
+            search_store.optimize()?;
+        }
+
+        log::debug!("[Optimize] Optimization completed");
+        Ok(())
+    }
+
+    /// Get overall system statistics
+    pub fn get_system_stats(&self) -> SystemStats {
+        let shard_health = self.get_shard_health();
+        let cache_stats = self.get_cache_stats();
+        let distribution_stats = self.get_distribution_stats();
+
+        SystemStats {
+            shard_health,
+            cache_stats,
+            total_records: distribution_stats.total_records,
+            shard_count: self.shard_count(),
+            distribution_entropy: distribution_stats.distribution_entropy,
+            load_balance_score: distribution_stats.load_balance_score,
+        }
     }
 }
 

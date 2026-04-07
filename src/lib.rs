@@ -55,9 +55,8 @@ pub use timeline::{
 };
 
 pub use sharding::{
-    AllocationType, CacheConfig, CacheStats, ShardAllocation, ShardConfig, ShardDetail,
-    ShardManager, ShardManagerBuilder, ShardOperation, ShardResult, ShardStatistics,
-    ShardingStrategy,
+    AllocationType, CacheConfig, ShardAllocation, ShardConfig, ShardDetail, ShardManager,
+    ShardManagerBuilder, ShardOperation, ShardResult, ShardStatistics, ShardingStrategy,
 };
 
 pub use vector_timeline::{
@@ -72,10 +71,29 @@ pub use distributed_graph::{
 pub use graph_algorithms::{CycleDetectionResult, GraphAlgorithms, LongestPathResult};
 
 pub use data_distribution::{
-    AdaptiveConfig, AdvancedChunkingConfig, BucketStats, ChunkSearchResult, ChunkStatistics,
-    ChunkedDocument, ChunkingConfig, DataDistributionManager, DistributionStats,
-    DistributionStrategy, EnhancedChunkSearchResult, EnhancedChunkedDocument, EnhancedTextChunk,
-    ShardInfo, SimilarityCluster, SimilarityConfig, StemmingLanguage, TextChunk, TimeBucketConfig,
+    AdaptiveConfig,
+    AdvancedChunkingConfig,
+    BucketStats,
+    CacheStats,
+    CacheType,
+    ChunkSearchResult,
+    ChunkStatistics,
+    ChunkedDocument,
+    ChunkingConfig,
+    DataDistributionManager,
+    DistributionStats,
+    DistributionStrategy,
+    EnhancedChunkSearchResult,
+    EnhancedChunkedDocument,
+    EnhancedTextChunk,
+    ShardHealth,
+    ShardInfo,
+    SimilarityCluster,
+    SimilarityConfig,
+    StemmingLanguage,
+    SystemStats, // Add these
+    TextChunk,
+    TimeBucketConfig,
     TimeBucketSize,
 };
 
