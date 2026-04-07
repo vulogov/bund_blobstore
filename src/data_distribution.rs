@@ -944,7 +944,7 @@ impl DataDistributionManager {
                 // Increment counter and get previous value
                 let counter = self.round_robin_counter.fetch_add(1, Ordering::SeqCst);
                 let idx = counter % shards.len();
-                println!(
+                log::debug!(
                     "Round-robin: counter={}, idx={}, shards={}",
                     counter,
                     idx,

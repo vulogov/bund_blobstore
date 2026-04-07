@@ -468,10 +468,7 @@ pub fn ingest_from_url(
 
 ## See Also
 
-- [Grok Integration Documentation](./GROK.md)
-- [Data Distribution Manager](./data_distribution.md)
-- [Telemetry Timeline](./timeline.md)
-- [Vector Embeddings](./vector.md)
+- [Grok Integration Documentation](./GROK_INTEGRATION.md)
 
 ## License
 
