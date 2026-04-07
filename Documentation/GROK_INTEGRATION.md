@@ -1,5 +1,3 @@
-Here's comprehensive documentation for the Grok integration module:
-
 ```markdown
 # GROK Integration Documentation
 

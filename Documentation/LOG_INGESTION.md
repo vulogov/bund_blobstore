@@ -1,5 +1,3 @@
-Here's the comprehensive documentation for the Log Ingestor module:
-
 ```markdown
 # Log Ingestor Documentation
 

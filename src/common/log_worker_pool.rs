@@ -1,8 +1,10 @@
-// src/common/log_worker_pool.rs
+// src/common/log_worker_pool.rs - FIXED ORIGINAL VERSION
+
 use crate::common::grok_integration::GrokLogParser;
 use crate::common::log_ingestor::{IngestionStats, LogIngestor};
 use crate::data_distribution::{DataDistributionManager, DistributionStrategy};
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -29,7 +31,6 @@ pub enum IngestionTask {
         lines: Vec<String>,
         log_type: String,
     },
-    Stop,
 }
 
 #[derive(Debug)]
@@ -49,8 +50,6 @@ pub struct WorkerPoolConfig {
     pub max_retries: u32,
     pub retry_delay_ms: u64,
     pub shutdown_timeout_seconds: u64,
-    pub use_external_manager: bool,
-    pub use_external_ingestor: bool,
     pub grok_patterns: Vec<(String, String)>,
     pub default_source: String,
     pub distribution_strategy: DistributionStrategy,
@@ -61,13 +60,11 @@ impl Default for WorkerPoolConfig {
     fn default() -> Self {
         Self {
             num_workers: 4,
-            queue_capacity: 1000,
+            queue_capacity: 100,
             retry_failed: true,
             max_retries: 3,
-            retry_delay_ms: 1000,
-            shutdown_timeout_seconds: 30,
-            use_external_manager: false,
-            use_external_ingestor: false,
+            retry_delay_ms: 100,
+            shutdown_timeout_seconds: 5,
             grok_patterns: Vec::new(),
             default_source: "worker_pool".to_string(),
             distribution_strategy: DistributionStrategy::RoundRobin,
@@ -88,85 +85,73 @@ pub struct PoolStats {
     pub total_ingestion_time_ms: u64,
 }
 
-enum WorkerMessage {
-    Task(IngestionTask, u64),
-    Shutdown,
+struct WorkerMessage {
+    task: IngestionTask,
+    task_id: u64,
+    response_tx: mpsc::Sender<TaskResult>,
 }
 
 pub struct LogWorkerPool {
     workers: Vec<JoinHandle<()>>,
-    task_sender: mpsc::SyncSender<WorkerMessage>,
+    task_tx: mpsc::SyncSender<WorkerMessage>,
     stats: Arc<RwLock<PoolStats>>,
     running: Arc<AtomicBool>,
     task_counter: Arc<Mutex<u64>>,
-    result_receiver: Arc<Mutex<mpsc::Receiver<TaskResult>>>,
-    #[allow(dead_code)]
-    result_sender: mpsc::Sender<TaskResult>,
-    #[allow(dead_code)]
+    pending_results: Arc<Mutex<HashMap<u64, mpsc::Receiver<TaskResult>>>>,
     external_manager: Option<Arc<RwLock<DataDistributionManager>>>,
-    #[allow(dead_code)]
     external_ingestor: Option<Arc<LogIngestor>>,
+    config: WorkerPoolConfig,
 }
 
 impl LogWorkerPool {
-    pub fn new(config: WorkerPoolConfig) -> Result<Self> {
-        if config.use_external_manager || config.use_external_ingestor {
-            return Err("Cannot create pool with external resources using new()".to_string());
-        }
-
+    pub fn create(config: WorkerPoolConfig) -> Result<Self> {
         let data_dir = config
             .data_dir
             .clone()
             .ok_or_else(|| "data_dir required".to_string())?;
 
-        let (task_sender, task_receiver) = mpsc::sync_channel(config.queue_capacity);
-        let (result_sender, result_receiver) = mpsc::channel();
+        let (task_tx, task_rx) = mpsc::sync_channel(config.queue_capacity);
+        let task_rx = Arc::new(Mutex::new(task_rx));
 
         let stats = Arc::new(RwLock::new(PoolStats::default()));
         let running = Arc::new(AtomicBool::new(true));
         let task_counter = Arc::new(Mutex::new(0u64));
+        let pending_results = Arc::new(Mutex::new(HashMap::new()));
 
-        let mut worker_senders = Vec::with_capacity(config.num_workers);
         let mut workers = Vec::with_capacity(config.num_workers);
 
         for worker_id in 0..config.num_workers {
-            let (worker_sender, worker_receiver) = mpsc::channel();
-            worker_senders.push(worker_sender);
-
-            let result_sender_clone = result_sender.clone();
+            let task_rx = task_rx.clone();
             let stats_clone = stats.clone();
             let running_clone = running.clone();
             let config_clone = config.clone();
             let data_dir_clone = data_dir.clone();
+            let pending_results_clone = pending_results.clone();
 
             let handle = thread::spawn(move || {
                 Self::worker_loop_with_own_resources(
                     worker_id,
-                    worker_receiver,
-                    result_sender_clone,
+                    task_rx,
                     stats_clone,
                     running_clone,
                     config_clone,
                     data_dir_clone,
+                    pending_results_clone,
                 );
             });
             workers.push(handle);
         }
 
-        let dispatcher_handle =
-            Self::spawn_dispatcher(task_receiver, worker_senders, config.num_workers);
-        workers.push(dispatcher_handle);
-
         Ok(Self {
             workers,
-            task_sender,
+            task_tx,
             stats,
             running,
             task_counter,
-            result_receiver: Arc::new(Mutex::new(result_receiver)),
-            result_sender,
+            pending_results,
             external_manager: None,
             external_ingestor: None,
+            config,
         })
     }
 
@@ -174,54 +159,48 @@ impl LogWorkerPool {
         config: WorkerPoolConfig,
         manager: Arc<RwLock<DataDistributionManager>>,
     ) -> Result<Self> {
-        let (task_sender, task_receiver) = mpsc::sync_channel(config.queue_capacity);
-        let (result_sender, result_receiver) = mpsc::channel();
+        let (task_tx, task_rx) = mpsc::sync_channel(config.queue_capacity);
+        let task_rx = Arc::new(Mutex::new(task_rx));
 
         let stats = Arc::new(RwLock::new(PoolStats::default()));
         let running = Arc::new(AtomicBool::new(true));
         let task_counter = Arc::new(Mutex::new(0u64));
+        let pending_results = Arc::new(Mutex::new(HashMap::new()));
 
-        let mut worker_senders = Vec::with_capacity(config.num_workers);
         let mut workers = Vec::with_capacity(config.num_workers);
 
         for worker_id in 0..config.num_workers {
-            let (worker_sender, worker_receiver) = mpsc::channel();
-            worker_senders.push(worker_sender);
-
-            let result_sender_clone = result_sender.clone();
+            let task_rx = task_rx.clone();
             let stats_clone = stats.clone();
             let running_clone = running.clone();
             let config_clone = config.clone();
             let manager_clone = manager.clone();
+            let pending_results_clone = pending_results.clone();
 
             let handle = thread::spawn(move || {
                 Self::worker_loop_with_external_manager(
                     worker_id,
-                    worker_receiver,
-                    result_sender_clone,
+                    task_rx,
                     stats_clone,
                     running_clone,
                     config_clone,
                     manager_clone,
+                    pending_results_clone,
                 );
             });
             workers.push(handle);
         }
 
-        let dispatcher_handle =
-            Self::spawn_dispatcher(task_receiver, worker_senders, config.num_workers);
-        workers.push(dispatcher_handle);
-
         Ok(Self {
             workers,
-            task_sender,
+            task_tx,
             stats,
             running,
             task_counter,
-            result_receiver: Arc::new(Mutex::new(result_receiver)),
-            result_sender,
+            pending_results,
             external_manager: Some(manager),
             external_ingestor: None,
+            config,
         })
     }
 
@@ -229,97 +208,65 @@ impl LogWorkerPool {
         config: WorkerPoolConfig,
         ingestor: Arc<LogIngestor>,
     ) -> Result<Self> {
-        let (task_sender, task_receiver) = mpsc::sync_channel(config.queue_capacity);
-        let (result_sender, result_receiver) = mpsc::channel();
+        let (task_tx, task_rx) = mpsc::sync_channel(config.queue_capacity);
+        let task_rx = Arc::new(Mutex::new(task_rx));
 
         let stats = Arc::new(RwLock::new(PoolStats::default()));
         let running = Arc::new(AtomicBool::new(true));
         let task_counter = Arc::new(Mutex::new(0u64));
+        let pending_results = Arc::new(Mutex::new(HashMap::new()));
 
-        let mut worker_senders = Vec::with_capacity(config.num_workers);
         let mut workers = Vec::with_capacity(config.num_workers);
 
         for worker_id in 0..config.num_workers {
-            let (worker_sender, worker_receiver) = mpsc::channel();
-            worker_senders.push(worker_sender);
-
-            let result_sender_clone = result_sender.clone();
+            let task_rx = task_rx.clone();
             let stats_clone = stats.clone();
             let running_clone = running.clone();
             let config_clone = config.clone();
             let ingestor_clone = ingestor.clone();
+            let pending_results_clone = pending_results.clone();
 
             let handle = thread::spawn(move || {
                 Self::worker_loop_with_external_ingestor(
                     worker_id,
-                    worker_receiver,
-                    result_sender_clone,
+                    task_rx,
                     stats_clone,
                     running_clone,
                     config_clone,
                     ingestor_clone,
+                    pending_results_clone,
                 );
             });
             workers.push(handle);
         }
 
-        let dispatcher_handle =
-            Self::spawn_dispatcher(task_receiver, worker_senders, config.num_workers);
-        workers.push(dispatcher_handle);
-
         Ok(Self {
             workers,
-            task_sender,
+            task_tx,
             stats,
             running,
             task_counter,
-            result_receiver: Arc::new(Mutex::new(result_receiver)),
-            result_sender,
+            pending_results,
             external_manager: None,
             external_ingestor: Some(ingestor),
-        })
-    }
-
-    fn spawn_dispatcher(
-        task_receiver: mpsc::Receiver<WorkerMessage>,
-        worker_senders: Vec<mpsc::Sender<WorkerMessage>>,
-        num_workers: usize,
-    ) -> JoinHandle<()> {
-        thread::spawn(move || {
-            if num_workers == 0 {
-                // No workers to dispatch to, just drain the channel to avoid blocking
-                for _ in task_receiver {
-                    eprintln!("Warning: No workers available to process task");
-                }
-                return;
-            }
-
-            let mut worker_idx = 0;
-            for message in task_receiver {
-                if let Some(sender) = worker_senders.get(worker_idx) {
-                    if let Err(e) = sender.send(message) {
-                        eprintln!("Failed to send to worker {}: {}", worker_idx, e);
-                    }
-                }
-                worker_idx = (worker_idx + 1) % num_workers;
-            }
+            config,
         })
     }
 
     fn worker_loop_with_own_resources(
         worker_id: usize,
-        worker_receiver: mpsc::Receiver<WorkerMessage>,
-        result_sender: mpsc::Sender<TaskResult>,
+        task_rx: Arc<Mutex<mpsc::Receiver<WorkerMessage>>>,
         stats: Arc<RwLock<PoolStats>>,
         running: Arc<AtomicBool>,
         config: WorkerPoolConfig,
         data_dir: PathBuf,
+        pending_results: Arc<Mutex<HashMap<u64, mpsc::Receiver<TaskResult>>>>,
     ) {
         let distribution_manager =
             match DataDistributionManager::new(&data_dir, config.distribution_strategy.clone()) {
                 Ok(dm) => Arc::new(RwLock::new(dm)),
                 Err(e) => {
-                    error!("Worker {} failed: {}", worker_id, e);
+                    error!("Worker {} failed to create manager: {}", worker_id, e);
                     return;
                 }
             };
@@ -330,25 +277,26 @@ impl LogWorkerPool {
         }
 
         let ingestor = LogIngestor::new(distribution_manager, grok_parser, Default::default());
+
         Self::worker_loop_common(
             worker_id,
-            worker_receiver,
-            result_sender,
+            task_rx,
             stats,
             running,
             config,
             &ingestor,
+            pending_results,
         );
     }
 
     fn worker_loop_with_external_manager(
         worker_id: usize,
-        worker_receiver: mpsc::Receiver<WorkerMessage>,
-        result_sender: mpsc::Sender<TaskResult>,
+        task_rx: Arc<Mutex<mpsc::Receiver<WorkerMessage>>>,
         stats: Arc<RwLock<PoolStats>>,
         running: Arc<AtomicBool>,
         config: WorkerPoolConfig,
         manager: Arc<RwLock<DataDistributionManager>>,
+        pending_results: Arc<Mutex<HashMap<u64, mpsc::Receiver<TaskResult>>>>,
     ) {
         let grok_parser = GrokLogParser::new(&config.default_source);
         for (name, pattern) in &config.grok_patterns {
@@ -356,100 +304,83 @@ impl LogWorkerPool {
         }
 
         let ingestor = LogIngestor::new(manager, grok_parser, Default::default());
+
         Self::worker_loop_common(
             worker_id,
-            worker_receiver,
-            result_sender,
+            task_rx,
             stats,
             running,
             config,
             &ingestor,
+            pending_results,
         );
     }
 
     fn worker_loop_with_external_ingestor(
         worker_id: usize,
-        worker_receiver: mpsc::Receiver<WorkerMessage>,
-        result_sender: mpsc::Sender<TaskResult>,
+        task_rx: Arc<Mutex<mpsc::Receiver<WorkerMessage>>>,
         stats: Arc<RwLock<PoolStats>>,
         running: Arc<AtomicBool>,
         config: WorkerPoolConfig,
         ingestor: Arc<LogIngestor>,
+        pending_results: Arc<Mutex<HashMap<u64, mpsc::Receiver<TaskResult>>>>,
     ) {
         Self::worker_loop_common(
             worker_id,
-            worker_receiver,
-            result_sender,
+            task_rx,
             stats,
             running,
             config,
             &ingestor,
+            pending_results,
         );
     }
 
     fn worker_loop_common(
         worker_id: usize,
-        worker_receiver: mpsc::Receiver<WorkerMessage>,
-        result_sender: mpsc::Sender<TaskResult>,
+        task_rx: Arc<Mutex<mpsc::Receiver<WorkerMessage>>>,
         stats: Arc<RwLock<PoolStats>>,
         running: Arc<AtomicBool>,
         config: WorkerPoolConfig,
         ingestor: &LogIngestor,
+        _pending_results: Arc<Mutex<HashMap<u64, mpsc::Receiver<TaskResult>>>>,
     ) {
-        info!("Worker {} starting", worker_id);
+        info!("Worker {} started", worker_id);
 
         while running.load(Ordering::Relaxed) {
-            // Use blocking receive with timeout to allow checking running flag
-            let message = match worker_receiver.recv_timeout(Duration::from_millis(500)) {
-                Ok(msg) => msg,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    info!("Worker {} channel disconnected", worker_id);
-                    break;
+            let msg = {
+                let rx = task_rx.lock().unwrap();
+                match rx.recv_timeout(Duration::from_millis(10)) {
+                    Ok(msg) => msg,
+                    Err(_) => continue,
                 }
             };
 
-            match message {
-                WorkerMessage::Task(task, task_id) => {
-                    debug!("Worker {} processing task {}", worker_id, task_id);
+            debug!("Worker {} processing task {}", worker_id, msg.task_id);
 
-                    let start_time = std::time::Instant::now();
-                    let (success, stats_result, error) =
-                        Self::execute_task(ingestor, task, &config);
-                    let duration_ms = start_time.elapsed().as_millis() as u64;
+            let start = std::time::Instant::now();
+            let (success, stats_result, error) = Self::execute_task(ingestor, msg.task, &config);
+            let duration_ms = start.elapsed().as_millis() as u64;
 
-                    let result = TaskResult {
-                        task_id,
-                        stats: stats_result.clone(),
-                        success,
-                        error,
-                        duration_ms,
-                    };
+            let result = TaskResult {
+                task_id: msg.task_id,
+                stats: stats_result.clone(),
+                success,
+                error,
+                duration_ms,
+            };
 
-                    // Update stats
-                    {
-                        let mut pool_stats = stats.write();
-                        pool_stats.total_tasks_completed += 1;
-                        if !success {
-                            pool_stats.total_tasks_failed += 1;
-                        }
-                        pool_stats.total_records_ingested +=
-                            stats_result.total_records_stored as u64;
-                        pool_stats.total_ingestion_time_ms += duration_ms;
-                    }
-
-                    // Send result back
-                    if let Err(e) = result_sender.send(result) {
-                        error!("Worker {} failed to send result: {}", worker_id, e);
-                    } else {
-                        debug!("Worker {} completed task {}", worker_id, task_id);
-                    }
-                }
-                WorkerMessage::Shutdown => {
-                    info!("Worker {} received shutdown signal", worker_id);
-                    break;
-                }
+            if let Err(e) = msg.response_tx.send(result) {
+                error!("Worker {} failed to send result: {}", worker_id, e);
             }
+
+            let mut pool_stats = stats.write();
+            pool_stats.total_tasks_completed += 1;
+            if !success {
+                pool_stats.total_tasks_failed += 1;
+            }
+            pool_stats.total_records_ingested += stats_result.total_records_stored as u64;
+            pool_stats.total_ingestion_time_ms += duration_ms;
         }
 
         info!("Worker {} stopped", worker_id);
@@ -464,25 +395,11 @@ impl LogWorkerPool {
 
         loop {
             let result = match &task {
-                IngestionTask::File { path, log_type } => {
-                    if !path.exists() {
-                        return (
-                            false,
-                            IngestionStats::default(),
-                            Some(format!("File not found: {:?}", path)),
-                        );
-                    }
-                    ingestor.ingest_log_file(path, log_type)
-                }
+                IngestionTask::File { path, log_type } => ingestor.ingest_log_file(path, log_type),
                 IngestionTask::Url { url, log_type } => ingestor.ingest_from_url(url, log_type),
                 IngestionTask::Lines { lines, log_type } => {
-                    if lines.is_empty() {
-                        // Empty lines is success with zero records
-                        return (true, IngestionStats::default(), None);
-                    }
                     ingestor.ingest_log_lines(lines.clone(), log_type)
                 }
-                IngestionTask::Stop => return (true, IngestionStats::default(), None),
             };
 
             match result {
@@ -507,22 +424,38 @@ impl LogWorkerPool {
             return Err("Worker pool is not running".to_string());
         }
 
-        let mut counter = self.task_counter.lock().unwrap();
-        let task_id = *counter;
-        *counter += 1;
+        let task_id = {
+            let mut counter = self.task_counter.lock().unwrap();
+            let id = *counter;
+            *counter += 1;
+            id
+        };
 
-        debug!("Submitting task {}: {:?}", task_id, task);
+        let (tx, rx) = mpsc::channel();
+
+        let msg = WorkerMessage {
+            task,
+            task_id,
+            response_tx: tx,
+        };
+
+        self.task_tx
+            .send(msg)
+            .map_err(|e| format!("Failed to submit task: {}", e))?;
 
         {
-            let mut stats = self.stats.write();
-            stats.total_tasks_submitted += 1;
+            let mut pending = self.pending_results.lock().unwrap();
+            pending.insert(task_id, rx);
         }
 
-        // Use regular send - it will block if the channel is full
-        match self.task_sender.send(WorkerMessage::Task(task, task_id)) {
-            Ok(_) => Ok(task_id),
-            Err(e) => Err(format!("Failed to submit task: {}", e)),
-        }
+        let mut stats = self.stats.write();
+        stats.total_tasks_submitted += 1;
+
+        Ok(task_id)
+    }
+
+    pub fn submit_lines(&self, lines: Vec<String>, log_type: String) -> Result<u64> {
+        self.submit_task(IngestionTask::Lines { lines, log_type })
     }
 
     pub fn submit_file(&self, path: PathBuf, log_type: String) -> Result<u64> {
@@ -533,44 +466,37 @@ impl LogWorkerPool {
         self.submit_task(IngestionTask::Url { url, log_type })
     }
 
-    pub fn submit_lines(&self, lines: Vec<String>, log_type: String) -> Result<u64> {
-        self.submit_task(IngestionTask::Lines { lines, log_type })
-    }
-
+    // In src/common/log_worker_pool.rs, ensure wait_for_task timeout is reasonable
     pub fn wait_for_task(&self, task_id: u64, timeout_seconds: u64) -> Result<Option<TaskResult>> {
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(timeout_seconds);
+        let rx = {
+            let mut pending = self.pending_results.lock().unwrap();
+            pending.remove(&task_id)
+        };
 
-        while start.elapsed() < timeout {
-            let receiver = self.result_receiver.lock().unwrap();
-
-            // Try to receive without blocking
-            match receiver.try_recv() {
-                Ok(result) => {
-                    if result.task_id == task_id {
-                        return Ok(Some(result));
-                    }
-                    // For other tasks, we continue (they'll be processed later)
-                }
-                Err(mpsc::TryRecvError::Empty) => {
-                    // No results available, sleep a bit
-                    drop(receiver);
-                    thread::sleep(Duration::from_millis(100));
-                }
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    break;
+        match rx {
+            Some(rx) => {
+                // Use a reasonable timeout for receiving
+                match rx.recv_timeout(Duration::from_secs(timeout_seconds)) {
+                    Ok(result) => Ok(Some(result)),
+                    Err(_) => Ok(None),
                 }
             }
+            None => Ok(None),
         }
-
-        Ok(None)
     }
 
     pub fn get_stats(&self) -> PoolStats {
         let stats = self.stats.read();
-        let mut result = stats.clone();
-        result.active_workers = self.workers.len().saturating_sub(1);
-        result
+        PoolStats {
+            total_tasks_submitted: stats.total_tasks_submitted,
+            total_tasks_completed: stats.total_tasks_completed,
+            total_tasks_failed: stats.total_tasks_failed,
+            total_tasks_retried: stats.total_tasks_retried,
+            active_workers: self.workers.len(),
+            queue_size: 0,
+            total_records_ingested: stats.total_records_ingested,
+            total_ingestion_time_ms: stats.total_ingestion_time_ms,
+        }
     }
 
     pub fn stop(&mut self, graceful: bool) -> Result<()> {
@@ -578,15 +504,11 @@ impl LogWorkerPool {
         self.running.store(false, Ordering::Relaxed);
 
         if graceful {
-            // Send shutdown signal to all workers
-            for _ in 0..self.workers.len() {
-                let _ = self.task_sender.send(WorkerMessage::Shutdown);
-            }
-            // Give workers time to finish current tasks
-            thread::sleep(Duration::from_millis(1000));
+            thread::sleep(Duration::from_secs(
+                self.config.shutdown_timeout_seconds as u64,
+            ));
         }
 
-        // Wait for all workers to finish
         for handle in self.workers.drain(..) {
             let _ = handle.join();
         }
@@ -606,9 +528,10 @@ pub fn start_worker_pool(
         num_workers,
         default_source: default_source.to_string(),
         data_dir: Some(data_dir),
+        queue_capacity: 100,
         ..Default::default()
     };
-    LogWorkerPool::new(config)
+    LogWorkerPool::create(config)
 }
 
 pub fn start_worker_pool_with_manager(
@@ -621,7 +544,7 @@ pub fn start_worker_pool_with_manager(
         num_workers,
         default_source: default_source.to_string(),
         grok_patterns,
-        use_external_manager: true,
+        queue_capacity: 100,
         ..Default::default()
     };
     LogWorkerPool::with_external_manager(config, manager)
@@ -633,7 +556,7 @@ pub fn start_worker_pool_with_ingestor(
 ) -> Result<LogWorkerPool> {
     let config = WorkerPoolConfig {
         num_workers,
-        use_external_ingestor: true,
+        queue_capacity: 100,
         ..Default::default()
     };
     LogWorkerPool::with_external_ingestor(config, ingestor)
@@ -657,18 +580,33 @@ pub fn wait_for_tasks(
     timeout_seconds: u64,
 ) -> Result<Vec<TaskResult>> {
     let start = std::time::Instant::now();
-    let mut results = Vec::new();
+    let timeout = Duration::from_secs(timeout_seconds);
+    let mut results = Vec::with_capacity(task_ids.len());
     let mut remaining: Vec<u64> = task_ids.to_vec();
 
-    while !remaining.is_empty() && start.elapsed() < Duration::from_secs(timeout_seconds) {
-        let receiver = pool.result_receiver.lock().unwrap();
-        if let Ok(result) = receiver.try_recv() {
-            if let Some(pos) = remaining.iter().position(|&id| id == result.task_id) {
-                remaining.remove(pos);
-                results.push(result);
+    while !remaining.is_empty() && start.elapsed() < timeout {
+        let mut completed_indices = Vec::new();
+        for (idx, &task_id) in remaining.iter().enumerate() {
+            // Use a very short timeout for checking each task
+            match pool.wait_for_task(task_id, 1) {
+                Ok(Some(result)) => {
+                    results.push(result);
+                    completed_indices.push(idx);
+                }
+                Ok(None) => continue,
+                Err(e) => {
+                    warn!("Error waiting for task {}: {}", task_id, e);
+                }
             }
         }
-        thread::sleep(Duration::from_millis(100));
+        // Remove completed tasks (from highest index to lowest to avoid shifting issues)
+        for &idx in completed_indices.iter().rev() {
+            remaining.remove(idx);
+        }
+
+        if !remaining.is_empty() {
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 
     if !remaining.is_empty() {
