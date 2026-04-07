@@ -98,7 +98,9 @@ pub struct LogWorkerPool {
     running: Arc<AtomicBool>,
     task_counter: Arc<Mutex<u64>>,
     pending_results: Arc<Mutex<HashMap<u64, mpsc::Receiver<TaskResult>>>>,
+    #[allow(dead_code)]
     external_manager: Option<Arc<RwLock<DataDistributionManager>>>,
+    #[allow(dead_code)]
     external_ingestor: Option<Arc<LogIngestor>>,
     config: WorkerPoolConfig,
 }

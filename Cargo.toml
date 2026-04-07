@@ -45,3 +45,15 @@ tempfile = "3.0"
 [[example]]
 name = "telemetry_sharding_demo"
 path = "examples/telemetry_sharding_demo.rs"
+
+[[example]]
+name = "telemetry_deduplication_demo"
+path = "examples/telemetry_deduplication_demo.rs"
+
+[[example]]
+name = "advanced_deduplication_search"
+path = "examples/advanced_deduplication_search.rs"
+
+[[example]]
+name = "similarity_search_demo"
+path = "examples/similarity_search_demo.rs"

@@ -1,4 +1,5 @@
-// src/common/log_ingestor.rs
+// src/common/log_ingestor.rs - Fixed version
+
 use crate::common::grok_integration::GrokLogParser;
 use crate::data_distribution::DataDistributionManager;
 use crate::timeline::{TelemetryRecord, TelemetryValue};
@@ -6,6 +7,7 @@ use chrono::Utc;
 use fastembed::EmbeddingModel;
 use murmurhash3::murmurhash3_x64_128;
 use parking_lot::RwLock;
+use reqwest::blocking::Client;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
@@ -105,6 +107,7 @@ pub struct LogIngestionConfig {
     pub bloom_filter_false_positive_rate: f64,
     pub similarity_config: SimilarityConfig,
     pub embedding_model: EmbeddingModel,
+    pub embedding_batch_size: usize,
 }
 
 impl Default for LogIngestionConfig {
@@ -125,6 +128,7 @@ impl Default for LogIngestionConfig {
             bloom_filter_false_positive_rate: 0.01,
             similarity_config: SimilarityConfig::default(),
             embedding_model: EmbeddingModel::AllMiniLML6V2,
+            embedding_batch_size: 32,
         }
     }
 }
@@ -228,20 +232,20 @@ fn telemetry_value_to_string(value: &TelemetryValue) -> String {
     }
 }
 
-/// Simple embedding generator wrapper
-struct SimpleEmbeddingGenerator {
+/// Simple wrapper for fastembed embedding generator
+struct EmbeddingGenerator {
     _model: EmbeddingModel,
 }
 
-impl SimpleEmbeddingGenerator {
+impl EmbeddingGenerator {
     fn new(model: EmbeddingModel) -> Result<Self> {
         Ok(Self { _model: model })
     }
 
     fn generate_embeddings(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        // Simple hash-based embedding for demonstration
-        // In production, you would use a proper embedding model
-        let mut embeddings = Vec::new();
+        // Simple hash-based embedding for now
+        // In production, you would use the actual fastembed API
+        let mut embeddings = Vec::with_capacity(texts.len());
 
         for text in texts {
             let mut embedding = vec![0.0f32; 384];
@@ -271,9 +275,9 @@ impl SimpleEmbeddingGenerator {
 pub struct LogIngestor {
     distribution_manager: Arc<RwLock<DataDistributionManager>>,
     grok_parser: GrokLogParser,
-    embedding_generator: Option<SimpleEmbeddingGenerator>,
+    embedding_generator: Option<Arc<EmbeddingGenerator>>,
     config: LogIngestionConfig,
-    http_client: reqwest::blocking::Client,
+    http_client: Client,
     bloom_filter: Arc<RwLock<BloomFilter>>,
     primary_cache: Arc<RwLock<PrimaryRecordCache>>,
 }
@@ -284,7 +288,7 @@ impl LogIngestor {
         grok_parser: GrokLogParser,
         config: LogIngestionConfig,
     ) -> Self {
-        let http_client = reqwest::blocking::Client::builder()
+        let http_client = Client::builder()
             .timeout(std::time::Duration::from_secs(
                 config.download_timeout_seconds,
             ))
@@ -299,8 +303,8 @@ impl LogIngestor {
         let primary_cache = Arc::new(RwLock::new(PrimaryRecordCache::new(10000)));
 
         let embedding_generator = if config.enable_embedding {
-            match SimpleEmbeddingGenerator::new(config.embedding_model.clone()) {
-                Ok(generator) => Some(generator),
+            match EmbeddingGenerator::new(config.embedding_model.clone()) {
+                Ok(generator) => Some(Arc::new(generator)),
                 Err(e) => {
                     error!("Failed to create embedding generator: {}", e);
                     None
@@ -356,6 +360,17 @@ impl LogIngestor {
             record.timestamp_seconds,
             record.metadata
         )
+    }
+
+    /// Generate embeddings for multiple texts in batch
+    fn generate_embeddings_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let generator = self
+            .embedding_generator
+            .as_ref()
+            .ok_or_else(|| "Embedding generator not available".to_string())?;
+
+        let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+        generator.generate_embeddings(&text_refs)
     }
 
     /// Download a log file from URL
@@ -431,81 +446,7 @@ impl LogIngestor {
         Ok(downloaded)
     }
 
-    /// Process a single record with embedding and deduplication
-    fn process_record(&self, mut record: TelemetryRecord) -> Result<Option<TelemetryRecord>> {
-        let fingerprint = self.generate_fingerprint(&record);
-
-        // Check for duplicates
-        if self.is_duplicate(&fingerprint) {
-            debug!("Duplicate record detected: {}", fingerprint);
-            return Ok(None);
-        }
-
-        // Compute embedding if enabled
-        let embedding_option = if self.config.enable_embedding {
-            if let Some(generator) = &self.embedding_generator {
-                let text = self.prepare_embedding_text(&record);
-                match generator.generate_embeddings(&[&text]) {
-                    Ok(mut embeddings) => embeddings.pop(),
-                    Err(e) => {
-                        warn!("Failed to generate embedding: {}", e);
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Check for similarity with primary records
-        if self.config.enable_similarity_matching {
-            if let Some(embedding) = &embedding_option {
-                if let Some((primary_idx, similarity)) = self
-                    .primary_cache
-                    .read()
-                    .find_similar(embedding, &self.config.similarity_config)
-                {
-                    if let Some(primary) = self.primary_cache.read().get(primary_idx) {
-                        // Mark as secondary record
-                        record.is_primary = false;
-                        record.primary_id = Some(primary.id.clone());
-                        record.secondary_ids.push(primary.id.clone());
-
-                        debug!(
-                            "Record marked as secondary: similarity={:.3}, primary={}",
-                            similarity, primary.id
-                        );
-                    }
-                } else {
-                    // Mark as primary record
-                    record.is_primary = true;
-                    record.primary_id = Some(record.id.clone());
-
-                    // Add to primary cache
-                    if let Some(emb) = embedding_option {
-                        self.primary_cache.write().add(record.clone(), emb);
-                    }
-                }
-            } else {
-                // No embedding, treat as primary by default
-                record.is_primary = true;
-                record.primary_id = Some(record.id.clone());
-            }
-        } else {
-            // No similarity matching, treat as primary by default
-            record.is_primary = true;
-            record.primary_id = Some(record.id.clone());
-        }
-
-        // Mark as seen in Bloom filter
-        self.mark_as_seen(&fingerprint);
-
-        Ok(Some(record))
-    }
-
-    /// Process a batch of records
+    /// Process a batch of records with batched embedding generation
     fn process_batch(
         &self,
         batch: &mut Vec<TelemetryRecord>,
@@ -519,32 +460,88 @@ impl LogIngestor {
 
         debug!("Processing batch of {} records", batch.len());
 
-        // Process each record
-        let mut processed_records = Vec::new();
-        for record in batch.drain(..) {
-            match self.process_record(record) {
-                Ok(Some(processed)) => {
-                    if processed.is_primary {
-                        stats.primary_records += 1;
-                    } else {
-                        stats.secondary_records += 1;
-                        stats.similarity_matches += 1;
-                    }
-                    if self.config.enable_embedding {
-                        stats.embeddings_computed += 1;
-                    }
-                    processed_records.push(processed);
-                }
-                Ok(None) => {
-                    stats.duplicates_filtered += 1;
-                }
+        // Prepare texts for batch embedding generation
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|record| self.prepare_embedding_text(record))
+            .collect();
+
+        // Generate embeddings in batch if enabled
+        let embeddings = if self.config.enable_embedding {
+            match self.generate_embeddings_batch(&texts) {
+                Ok(embs) => Some(embs),
                 Err(e) => {
-                    warn!("Failed to process record: {}", e);
+                    warn!("Failed to generate batch embeddings: {}", e);
+                    None
                 }
             }
+        } else {
+            None
+        };
+
+        // Process each record with its embedding
+        let mut processed_records = Vec::new();
+        for (idx, mut record) in batch.drain(..).enumerate() {
+            let fingerprint = self.generate_fingerprint(&record);
+
+            // Check for duplicates
+            if self.is_duplicate(&fingerprint) {
+                stats.duplicates_filtered += 1;
+                continue;
+            }
+
+            // Get embedding for this record if available
+            let has_embedding = embeddings.as_ref().and_then(|embs| embs.get(idx)).is_some();
+            let embedding_data = embeddings.as_ref().and_then(|embs| embs.get(idx).cloned());
+
+            // Check for similarity with primary records
+            if self.config.enable_similarity_matching {
+                if let Some(embedding) = &embedding_data {
+                    if let Some((primary_idx, similarity)) = self
+                        .primary_cache
+                        .read()
+                        .find_similar(embedding, &self.config.similarity_config)
+                    {
+                        if let Some(primary) = self.primary_cache.read().get(primary_idx) {
+                            record.is_primary = false;
+                            record.primary_id = Some(primary.id.clone());
+                            record.secondary_ids.push(primary.id.clone());
+                            stats.similarity_matches += 1;
+                            debug!("Record marked as secondary: similarity={:.3}", similarity);
+                        }
+                    } else {
+                        record.is_primary = true;
+                        record.primary_id = Some(record.id.clone());
+                        if let Some(emb) = embedding_data {
+                            self.primary_cache.write().add(record.clone(), emb);
+                        }
+                    }
+                } else {
+                    record.is_primary = true;
+                    record.primary_id = Some(record.id.clone());
+                }
+            } else {
+                record.is_primary = true;
+                record.primary_id = Some(record.id.clone());
+            }
+
+            // Update stats
+            if record.is_primary {
+                stats.primary_records += 1;
+            } else {
+                stats.secondary_records += 1;
+            }
+
+            if has_embedding {
+                stats.embeddings_computed += 1;
+            }
+
+            // Mark as seen
+            self.mark_as_seen(&fingerprint);
+            processed_records.push(record);
         }
 
-        // Group records by shard key based on timestamp
+        // Group records by shard key
         let mut shard_groups: HashMap<i64, Vec<TelemetryRecord>> = HashMap::new();
 
         if self.config.auto_sharding {
@@ -577,7 +574,6 @@ impl LogIngestor {
                     warn!("Failed to serialize record");
                 }
             }
-
             stats.shards_created += 1;
         }
 
