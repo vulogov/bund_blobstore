@@ -4,6 +4,7 @@ pub mod grok_integration;
 pub mod json_fingerprint;
 pub mod log_ingestor;
 pub mod log_worker_pool;
+pub mod multidimensional_storage;
 pub mod root_cause_analyzer;
 
 // Re-export commonly used types
@@ -26,4 +27,9 @@ pub use root_cause_analyzer::{
     AnalysisSummary, CausalChain, CausalLink, CorrelationMatrix, EventCluster, EventOccurrence,
     EventPattern, PropagationEvent, RCAConfig, RCAReport, Recommendation, ReportMetadata,
     ReportVisualizations, RootCauseAnalyzer, RootCauseResult, TimeRange, create_event_occurrence,
+};
+
+pub use multidimensional_storage::{
+    Bounds, Coord1D, Coord2D, Coord3D, Coordinate, DimensionMetadata, DimensionType,
+    MultidimensionalStorage, SampleIdQueue, TelemetrySample,
 };

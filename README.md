@@ -1,294 +1,416 @@
-```markdown
 # Bund BlobStore
 
-A high-performance, ACID-compliant embedded database with advanced features for modern data applications.
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/bund_blobstore.svg)](https://crates.io/crates/bund_blobstore)
+[![Documentation](https://docs.rs/bund_blobstore/badge.svg)](https://docs.rs/bund_blobstore)
 
-## Overview
+A high-performance, ACID-compliant embedded database with enterprise-grade features including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, vector-telemetry integration, distributed graph algorithms, intelligent data distribution, dynamic sharding, LRU caching, advanced chunked document storage with RAG support, multidimensional telemetry storage, and concurrent access patterns.
 
-Bund BlobStore is a feature-rich embedded database written in Rust, designed for applications requiring advanced data management capabilities. It combines traditional key-value storage with cutting-edge features like vector similarity search, full-text search, time-series telemetry, distributed graph processing, and intelligent data distribution.
+## 📚 Documentation
 
-## Key Features
+Comprehensive documentation for major features:
+- **[Multidimensional Storage](./docs/MULTIDIMENSIONAL.md)** - 1D, 2D, 3D telemetry storage with FIFO queues
+- **[Chunked Document Storage](./docs/CHUNKED_STORAGE.md)** - RAG-ready document chunking and search
+- **[Close & Sync Operations](./docs/CLOSE_AND_SYNC.md)** - Cache management and synchronization
 
-### Core Database Features
-- **ACID Compliance** - Full transaction support with atomicity, consistency, isolation, and durability
-- **High Performance** - Optimized for both read and write operations with configurable caching
-- **Concurrent Access** - Thread-safe operations with fine-grained locking
-- **Dynamic Sharding** - Automatic data distribution across shards for horizontal scaling
+## ✨ Features
+
+### Core Database
+- **⚡ Blazing Fast** - Built on [RedB](https://github.com/cberner/redb), one of the fastest embedded databases for Rust
+- **🔐 ACID Compliant** - Full transaction support with MVCC
+- **📦 Single File** - Everything stored in a single `.redb` file per component
+- **📊 Metadata Tracking** - Automatic timestamps, sizes, and checksums for data integrity
+- **🔍 Advanced Querying** - Prefix search, wildcard patterns, pagination
+- **🛡️ Integrity Verification** - Automatic checksum validation for data integrity
+
+### Multidimensional Telemetry Storage (NEW!)
+- **📐 1D, 2D, 3D Coordinate Spaces** - Store telemetry in linear, grid, or volumetric spaces
+- **🔄 Fixed-Size FIFO Queues** - Automatic eviction of oldest samples when capacity is reached
+- **🎯 Coordinate-Based Access** - Push and query samples by specific coordinates
+- **📊 Time Range Queries** - Retrieve samples within custom time windows
+- **🏷️ Mixed Value Types** - Float, int, string, bool, blob, JSON, dynamic values
+- **💾 Metadata Preservation** - Store custom metadata with each sample
+- **⚡ Distributed Storage** - Automatic sharding using round-robin distribution
+- **🔍 Vector Search** - Semantic search for dimension labels
+- **🗑️ Dynamic Dimension Management** - Create, list, and delete dimensions at runtime
+
+### Advanced Chunked Document Storage with RAG Support
+- **📄 Intelligent Text Chunking** - Split documents at sentence and paragraph boundaries
+- **🔄 Round-Robin Distribution** - Distribute chunks evenly across all shards
+- **🎯 Configurable Context Windows** - Include before/after text for each chunk
+- **🌍 Multi-Language Stemming** - Snowball stemming for 8 languages
+- **🔍 Hybrid Search on Chunks** - Combine vector similarity with keyword matching
+- **🤖 RAG-Ready Results** - Return chunks with full context for LLM integration
+- **📊 Chunk Statistics** - Track word, sentence, and paragraph counts
+- **💾 Metadata Preservation** - Preserve document metadata across all chunks
 
 ### Search Capabilities
-- **Full-Text Search** - Advanced text search with relevance scoring (TF-IDF, BM25)
-- **Vector Similarity Search** - Semantic search using embeddings with cosine similarity
-- **Hybrid Search** - Combine FTS and vector search for optimal results
-- **Fuzzy Search** - Approximate string matching and typo tolerance
-- **Faceted Search** - Filter and aggregate search results by metadata
+- **🔎 Full-Text Search** - Powerful inverted index with TF-IDF scoring
+- **🥴 Fuzzy Search** - Multiple algorithms: Levenshtein, Damerau-Levenshtein, Jaro-Winkler, Sørensen-Dice
+- **🧠 Vector Search** - Semantic similarity using state-of-the-art embeddings (fastembed)
+- **🎯 Hybrid Search** - Combine vector similarity with keyword matching for optimal results
+- **🎨 Text Highlighting** - Visual indication of matching terms
+- **📊 Faceted Search** - Multi-dimensional filtering with facet counts and ranges
+- **🔤 Phrase Matching** - Exact phrase search with proximity scoring
+- **📏 Proximity Search** - Find words within N words of each other
 
-### Telemetry & Time-Series
-- **Telemetry Timeline** - Optimized storage for time-series telemetry data
-- **Primary/Secondary Relationships** - Link related telemetry records
-- **Vector Timeline** - Combine time-series with vector embeddings
-- **Downsampling & Aggregation** - Built-in data reduction and statistics
+### Telemetry & Timeline
+- **📈 Time Series Data** - Store telemetry events with timestamps
+- **🏷️ Mixed Value Types** - Float, int, string, bool, blob, JSON, and dynamic values
+- **🔗 Primary-Secondary Relationships** - Hierarchical telemetry records with linking
+- **⏱️ Time Interval Search** - Query by last hour, day, week, month, or custom ranges
+- **📊 Minute-Grade Bucketing** - Aggregate data by minute intervals with statistics
+- **🎯 Key & Source Search** - Filter by metric keys and data sources
 
-### Data Processing
-- **Document Chunking** - Intelligent splitting of large documents for RAG applications
-- **Grok Pattern Parsing** - Parse unstructured logs using Grok patterns
-- **Log Ingestion** - Batch processing with deduplication and embedding generation
-- **Worker Pool** - Multi-threaded log processing with configurable workers
+### Vector-Telemetry Integration
+- **🔗 Time-Vector Search** - Combine temporal proximity with semantic similarity
+- **📊 Configurable Weights** - Balance between time relevance and semantic relevance
+- **🎯 Similar Event Discovery** - Find events similar to a reference event within time windows
+- **📈 Temporal Pattern Analysis** - Identify when similar events occur over time
+- **🤖 Automatic Embedding Generation** - Convert telemetry values to vector embeddings
 
-### Analytics
-- **Root Cause Analysis** - Discover causal relationships between events
-- **Pattern Mining** - Identify frequent event sequences using Apriori algorithm
-- **Correlation Analysis** - Build correlation matrices between event types
-- **Anomaly Detection** - Identify unusual patterns in telemetry data
+### Intelligent Data Distribution
+- **🎯 Multiple Distribution Strategies** - Round-robin, time bucket, key similarity, adaptive load balancing
+- **🔄 Automatic Shard Selection** - No need to specify shard targets
+- **⚖️ Adaptive Distribution** - Dynamically balance load based on shard utilization
+- **📈 Distribution Statistics** - Track entropy, load balance scores, and shard distribution
+- **🔄 Runtime Strategy Switching** - Change distribution strategy without restart
 
-### Graph Processing
-- **Distributed Graphs** - Store and query graph data across shards
-- **Graph Algorithms** - Path finding, cycle detection, centrality measures
-- **Real-Time Traversal** - Efficient graph navigation and querying
+### Dynamic Shard Management
+- **➕ Add Shards Dynamically** - Add new shards at runtime for horizontal scaling
+- **➖ Remove Shards** - Remove shards for scaling down
+- **🏷️ Key-Range Shards** - Create shards that handle specific key ranges
+- **⏰ Time-Range Shards** - Create shards for specific time periods
+- **🔍 Shard Discovery** - List all shards, check existence, get details
+- **⚖️ Load Monitoring** - Track load distribution across shards
 
-## Quick Start
+### LRU Cache with TTL
+- **⚡ LRU Eviction** - Least Recently Used eviction policy
+- **⏰ TTL Support** - Time-to-live for automatic cache expiration
+- **📈 Cache Statistics** - Track hits, misses, and hit rates
+- **📥 Preloading** - Pre-populate cache with common keys
+
+### Distributed Graph with Advanced Algorithms
+- **🕸️ Cross-Shard Graph Storage** - Nodes and edges distributed across multiple shards
+- **🔄 Cycle Detection** - Detect cycles in distributed graphs with parallel processing
+- **⚡ Shortest Path** - Optimized Dijkstra with early termination
+- **🔍 Bidirectional Search** - Faster path finding for large graphs
+- **📏 Longest Path** - Find longest paths in DAGs and cyclic graphs
+
+## 📦 Installation
+
+```toml
+[dependencies]
+bund_blobstore = "0.12.0"
+```
+
+## 🚀 Quick Start
+
+### Basic Key-Value Operations
 
 ```rust
-use bund_blobstore::blobstore::BlobStore;
-use bund_blobstore::search::SearchIndex;
-use bund_blobstore::vector::VectorStore;
+use bund_blobstore::BlobStore;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize blob store
-    let store = BlobStore::new("./data")?;
+    let mut store = BlobStore::open("my_data.redb")?;
+    store.put("user:100", b"Alice data", Some("user"))?;
     
-    // Store data
-    store.put("key1", b"Hello World")?;
-    
-    // Retrieve data
-    let data = store.get("key1")?;
-    println!("Retrieved: {}", String::from_utf8_lossy(&data));
-    
-    // Full-text search
-    let search_index = SearchIndex::new("./search_index")?;
-    search_index.index_document("doc1", "This is a test document")?;
-    let results = search_index.search("test", 10)?;
-    
+    if let Some(data) = store.get("user:100")? {
+        println!("Retrieved: {}", String::from_utf8_lossy(&data));
+    }
     Ok(())
 }
 ```
 
-## Architecture
+## 📐 Multidimensional Telemetry Storage
 
-Bund BlobStore is organized into several core modules:
-
-```
-bund_blobstore/
-├── blobstore/          # Core key-value store with ACID compliance
-├── search/             # Full-text search and indexing
-├── vector/             # Vector embeddings and similarity search
-├── timeline/           # Time-series telemetry storage
-├── data_distribution/  # Sharding and distribution strategies
-├── distributed_graph/  # Graph storage and algorithms
-├── common/             # Utilities and helpers
-│   ├── grok_integration/    # Grok pattern parsing
-│   ├── log_ingestor/        # Log ingestion pipeline
-│   ├── log_worker_pool/     # Multi-threaded processing
-│   ├── root_cause_analyzer/ # Event correlation analysis
-│   └── embeddings/          # Vector embedding generation
-└── chunked_document/   # Document chunking for RAG
-```
-
-## Documentation
-
-Complete documentation is available in the `Documentation/` directory:
-
-### Core Documentation
-- [**BlobStore Documentation**](Documentation/BLOBSTORE.md) - Core key-value store features and usage
-- [**Search Documentation**](Documentation/SEARCH.md) - Full-text search and indexing
-- [**Vector Documentation**](Documentation/VECTOR.md) - Vector embeddings and similarity search
-- [**Timeline Documentation**](Documentation/TIMELINE.md) - Telemetry timeline and time-series data
-
-### Advanced Features
-- [**Data Distribution**](Documentation/DATA_DISTRIBUTION.md) - Sharding strategies and distribution management
-- [**Chunked Documents**](Documentation/CHUNKED_DOCUMENT.md) - Document chunking for RAG applications
-- [**Distributed Graphs**](Documentation/DISTRIBUTED_GRAPH.md) - Graph storage and algorithms
-
-### Common Utilities
-- [**Grok Integration**](Documentation/GROK.md) - Log parsing with Grok patterns
-- [**Log Ingestor**](Documentation/LOG_INGESTOR.md) - Log ingestion with deduplication
-- [**Log Worker Pool**](Documentation/LOG_WORKER_POOL.md) - Multi-threaded log processing
-- [**Root Cause Analysis**](Documentation/ROOT_CAUSE_ANALYSIS.md) - Event correlation and RCA
-
-### Examples
-- [**Hybrid Search Demo**](examples/hybrid_search_demo.rs) - Full-text + vector search
-- [**Deduplication Demo**](examples/deduplication_demo.rs) - Duplicate detection and removal
-- [**Root Cause Analysis Demo**](examples/root_cause_analysis_demo.rs) - Event correlation analysis
-
-## Installation
-
-Add this to your `Cargo.toml`:
-
-```toml
-[dependencies]
-bund_blobstore = { version = "0.11", features = ["full"] }
-```
-
-### Feature Flags
-
-- `full` - Enable all features (default)
-- `fastembed` - Enable vector embeddings with FastEmbed
-- `grok` - Enable Grok pattern parsing
-- `reqwest` - Enable HTTP downloads for log ingestion
-- `tokio` - Enable async support
-
-## Usage Examples
-
-### Document Storage with Hybrid Search
+### Create Dimensions and Store Data
 
 ```rust
-use bund_blobstore::data_distribution::DataDistributionManager;
-use bund_blobstore::common::embeddings::EmbeddingGenerator;
+use bund_blobstore::common::{
+    MultidimensionalStorage, DimensionType, Coordinate, Coord1D, Coord2D, Coord3D
+};
+use bund_blobstore::TelemetryValue;
 
-let manager = DataDistributionManager::new("./data", DistributionStrategy::RoundRobin)?;
-let embedder = EmbeddingGenerator::new()?;
+let storage = MultidimensionalStorage::open("telemetry.db")?;
 
-// Store document chunks with embeddings
-for (i, chunk) in document_chunks.iter().enumerate() {
-    let embedding = embedder.embed(chunk)?;
-    let doc = StoredDocument { id: format!("doc_{}", i), content: chunk, embedding };
-    manager.put(&doc.id, &serde_json::to_vec(&doc)?, None)?;
-}
+// Create 1D dimension for sensors
+storage.create_dimension("sensors", DimensionType::OneD, 1000, None)?;
 
-// Hybrid search
-let query_embedding = embedder.embed("search query")?;
-let fts_results = full_text_search(&manager, "query")?;
-let vector_results = vector_search(&manager, &query_embedding, 10)?;
-let hybrid_results = combine_results(&fts_results, &vector_results);
+// Store temperature reading at sensor 42
+let coord = Coordinate::OneD(Coord1D(42));
+storage.push_sample(
+    "sensors",
+    coord,
+    TelemetryValue::Float(23.5),
+    None,
+    HashMap::new(),
+)?;
+
+// Retrieve latest 10 samples
+let samples = storage.get_latest_samples("sensors", coord, 10)?;
 ```
 
-### Log Ingestion with Deduplication
+### 2D and 3D Storage
 
 ```rust
-use bund_blobstore::common::{LogIngestor, LogIngestionConfig, GrokLogParser};
+// 2D grid for spatial data
+let coord_2d = Coordinate::TwoD(Coord2D(10, 20));
+storage.push_sample("grid", coord_2d, TelemetryValue::Int(100), None, HashMap::new())?;
 
-let grok = GrokLogParser::new("my_app");
-let config = LogIngestionConfig {
-    enable_deduplication: true,
-    enable_embedding: true,
-    enable_similarity_matching: true,
+// 3D voxel space
+let coord_3d = Coordinate::ThreeD(Coord3D(5, 5, 5));
+storage.push_sample("voxels", coord_3d, TelemetryValue::Float(98.6), None, HashMap::new())?;
+```
+
+### Time Range Queries
+
+```rust
+use chrono::{Utc, Duration};
+
+let start = Utc::now() - Duration::hours(24);
+let end = Utc::now();
+
+let samples = storage.get_samples_in_time_range("sensors", coord, start, end)?;
+```
+
+## 📄 Advanced Chunked Document Storage
+
+```rust
+use bund_blobstore::{DataDistributionManager, AdvancedChunkingConfig, StemmingLanguage};
+
+let manager = DataDistributionManager::new("rag_data", DistributionStrategy::RoundRobin)?;
+
+let config = AdvancedChunkingConfig {
+    chunk_size: 512,
+    chunk_overlap: 50,
+    min_chunk_size: 100,
+    break_on_sentences: true,
+    break_on_paragraphs: true,
+    enable_stemming: true,
+    language: StemmingLanguage::English,
     ..Default::default()
 };
 
-let ingestor = LogIngestor::new(manager, grok, config);
-let stats = ingestor.ingest_log_file("app.log", "application")?;
+let doc = manager.store_advanced_chunked_document(
+    "technical_guide",
+    long_text,
+    metadata,
+    &config,
+)?;
 
-println!("Stored {} records, filtered {} duplicates", 
-         stats.total_records_stored, stats.duplicates_filtered);
+// Hybrid search across chunks
+let results = manager.search_advanced_chunks("database optimization", 5, 0.7, true)?;
 ```
 
-### Root Cause Analysis
+## 🔍 Search Capabilities
+
+### Full-Text Search
 
 ```rust
-use bund_blobstore::common::root_cause_analyzer::{RootCauseAnalyzer, RCAConfig};
+use bund_blobstore::SearchableBlobStore;
 
-let analyzer = RootCauseAnalyzer::new(manager, RCAConfig::default());
-let result = analyzer.analyze_time_range(start_time, end_time, None)?;
+let mut store = SearchableBlobStore::open("searchable.redb")?;
+store.put_text("doc1", "The quick brown fox jumps over the lazy dog", None)?;
 
-println!("Root causes: {:?}", result.root_events);
-for link in &result.causal_links {
-    println!("{} → {} (confidence: {:.1}%)", 
-             link.cause_event, link.effect_event, link.confidence * 100.0);
-}
-
-// Generate JSON report
-let json_report = analyzer.generate_json_report(&result)?;
-std::fs::write("rca_report.json", json_report)?;
+let results = store.search("quick brown", 10)?;
 ```
 
-## Performance
+### Vector Search
 
-Bund BlobStore is designed for high performance:
+```rust
+use bund_blobstore::VectorStore;
 
-- **Read Throughput**: 100,000+ ops/second (depending on data size)
-- **Write Throughput**: 50,000+ ops/second with batching
-- **Search Latency**: <10ms for FTS, <20ms for vector search (1M vectors)
-- **Vector Similarity**: 95% accuracy with HNSW indexing
+let mut store = VectorStore::open("vectors.redb")?;
+store.insert_text("vec1", "Rust is a systems programming language", None)?;
 
-Benchmarks are available in the `benches/` directory.
+let results = store.search_similar("system programming", 5)?;
+```
 
-## Use Cases
+## 📊 Telemetry Timeline
+
+```rust
+use bund_blobstore::{TelemetryStore, TelemetryRecord, TelemetryValue, TelemetryQuery};
+
+let mut telemetry = TelemetryStore::open("telemetry.redb")?;
+
+let record = TelemetryRecord::new_primary(
+    "cpu_001".to_string(),
+    Utc::now(),
+    "cpu_usage".to_string(),
+    "server_01".to_string(),
+    TelemetryValue::Float(45.2),
+);
+telemetry.store(record)?;
+
+let query = TelemetryQuery {
+    time_interval: Some(TimeInterval::last_hour()),
+    keys: Some(vec!["cpu_usage".to_string()]),
+    limit: 100,
+    ..Default::default()
+};
+
+let results = telemetry.query(&query)?;
+```
+
+## 🕸️ Distributed Graph Algorithms
+
+```rust
+use bund_blobstore::{DistributedGraphManager, GraphAlgorithms};
+
+let manager = Arc::new(DistributedGraphManager::new("distributed_graph")?);
+let algorithms = GraphAlgorithms::new(manager.clone());
+
+// Detect cycles
+let cycle_result = algorithms.detect_cycles(None)?;
+println!("Found {} cycles", cycle_result.cycle_count);
+
+// Find shortest path
+let shortest = algorithms.shortest_path_optimized("node_A", "node_Z", true)?;
+```
+
+## 🚀 Concurrent Operations
+
+```rust
+use bund_blobstore::UnifiedConcurrentStore;
+
+let store = UnifiedConcurrentStore::open("unified.redb")?;
+
+let store1 = store.clone();
+let handle = thread::spawn(move || {
+    store1.blob().put("key", b"value", None).unwrap();
+});
+```
+
+## 📚 Detailed Documentation
+
+For comprehensive documentation on specific features, see:
+
+- **[Multidimensional Storage](./docs/MULTIDIMENSIONAL.md)** - Complete guide to 1D, 2D, and 3D telemetry storage with FIFO queues, time-range queries, and dimension management
+- **[Chunked Document Storage](./docs/CHUNKED_STORAGE.md)** - RAG-ready document processing with advanced chunking, hybrid search, and context windows
+- **[Close & Sync Operations](./docs/CLOSE_AND_SYNC.md)** - Cache management, synchronization, and optimization features
+
+## 📊 Performance Benchmarks
+
+- **Write throughput**: ~50,000 ops/second
+- **Read throughput**: ~100,000 ops/second
+- **Multidimensional storage**: <10ms per sample
+- **Time range queries**: <50ms for 10K samples
+- **Chunked document storage**: <100ms for 1MB document
+- **Hybrid chunk search**: <100ms across 1000 chunks
+- **Vector search**: <50ms for 10K vectors
+- **Load balance score**: >0.7 with adaptive distribution
+
+## 🔧 Configuration Examples
+
+### Multidimensional Storage Configuration
+
+```rust
+let storage = MultidimensionalStorage::open("data.db")?;
+
+// 1D with capacity 1000
+storage.create_dimension("sensors", DimensionType::OneD, 1000, None)?;
+
+// 2D with bounds
+let bounds = Bounds {
+    min_x: 0, max_x: 100,
+    min_y: Some(0), max_y: Some(100),
+    min_z: None, max_z: None,
+};
+storage.create_dimension("grid", DimensionType::TwoD, 500, Some(bounds))?;
+```
+
+### Chunking Configuration
+
+```rust
+let config = AdvancedChunkingConfig {
+    chunk_size: 512,
+    chunk_overlap: 50,
+    min_chunk_size: 100,
+    break_on_sentences: true,
+    break_on_paragraphs: true,
+    enable_stemming: true,
+    language: StemmingLanguage::English,
+    ..Default::default()
+};
+```
+
+## 🧪 Testing
+
+```bash
+# Run all tests
+cargo test
+
+# Run multidimensional storage tests
+cargo test --test commonmultidimensionalstorage-test -- --nocapture
+
+# Run chunked document tests
+cargo test --test advancedchunking-test -- --nocapture
+
+# Run with logging
+RUST_LOG=debug cargo test
+```
+
+## 📈 Use Cases
+
+### Multidimensional Telemetry
+- **IoT Sensor Networks** - Temperature, humidity, pressure sensors in 1D/2D/3D spaces
+- **Spatial Data Analysis** - Grid-based environmental monitoring
+- **Voxel Storage** - 3D scanning and volumetric data
+- **Time-Series Databases** - Historical data with FIFO retention
 
 ### RAG Applications
-- Document chunking and embedding storage
-- Hybrid search for context retrieval
-- Metadata filtering and ranking
+- **Document Q&A** - Store and retrieve relevant document chunks
+- **Knowledge Bases** - Build searchable document repositories
+- **LLM Context** - Provide rich context for language models
+- **Semantic Search** - Find documents by meaning, not just keywords
 
-### Observability Platforms
-- Telemetry timeline storage
-- Log aggregation and analysis
-- Root cause detection
+### Intelligent Observability
+- **Root Cause Analysis** - Find similar incidents within time windows
+- **Anomaly Detection** - Identify unusual patterns in telemetry
+- **Correlation** - Link temporally close and semantically similar events
 
-### Search Engines
-- Full-text search with relevance scoring
-- Vector similarity for semantic search
-- Hybrid ranking algorithms
+### Distributed Systems
+- **Horizontal Scaling** - Add shards as data grows
+- **Load Balancing** - Even distribution across nodes
+- **Multi-tenant Applications** - Isolate tenant data
 
-### Time-Series Analytics
-- Metric storage and aggregation
-- Event correlation and pattern detection
-- Anomaly detection
+## 🤝 Contributing
 
-## Contributing
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+```bash
+git clone https://github.com/yourusername/bund_blobstore.git
+cd bund_blobstore
+cargo build
+cargo test
+```
 
-## License
+## 📄 License
 
 This project is licensed under either of:
 
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
+- Apache License, Version 2.0
+- MIT license
 
-at your option.
+## 🙏 Acknowledgments
 
-## Acknowledgements
+- [RedB](https://github.com/cberner/redb) - Embedded database backend
+- [fastembed](https://github.com/Anush008/fastembed-rs) - Vector embeddings
+- [rust-stemmers](https://github.com/curusarn/rust-stemmers) - Snowball stemming
+- [chrono](https://github.com/chronotope/chrono) - Time handling
 
-Bund BlobStore builds on several excellent open-source crates:
-- [fastembed](https://crates.io/crates/fastembed) - Vector embeddings
-- [grok](https://crates.io/crates/grok) - Pattern matching
-- [tantivy](https://crates.io/crates/tantivy) - Full-text search (optional)
-- [petgraph](https://crates.io/crates/petgraph) - Graph algorithms
+## 🚀 Roadmap
 
-## Support
-
-- **Documentation**: See the [Documentation/](Documentation/) directory
-- **Examples**: Run examples in the `examples/` directory
-- **Issues**: Report bugs on [GitHub Issues](https://github.com/vulogov/bund_blobstore/issues)
-
-## Version History
-
-### Version 0.11.0
-- Added chunked document storage for RAG applications
-- Integrated FastEmbed for vector embeddings
-- Added root cause analysis module
-- Enhanced log ingestion with worker pool
-- Added hybrid search capabilities
-
-### Version 0.10.0
-- Added data distribution manager
-- Implemented dynamic sharding
-- Added distributed graph storage
-
-### Version 0.9.0
-- Added telemetry timeline
-- Implemented vector similarity search
-- Added Grok pattern integration
-
-## Roadmap
-
-- [ ] Multi-node replication
-- [ ] Backup and restore utilities
+- [ ] Async API support
+- [ ] Encryption at rest
+- [ ] Automatic shard rebalancing
+- [ ] Streaming chunk processing
 - [ ] WebAssembly support
-- [ ] More embedding models
-- [ ] Advanced graph algorithms
-- [ ] Time-series forecasting
+- [ ] 4D+ dimensional storage
+- [ ] Real-time analytics
 
 ---
 
-For detailed API documentation, run `cargo doc --open` after adding the dependency.
-```
+**Built with ❤️ using Rust**
