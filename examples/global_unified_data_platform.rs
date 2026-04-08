@@ -61,7 +61,7 @@ impl ManagedGraphStore {
             .unwrap()
             .put(&key, &data, Some("graph_nodes"))?)
     }
-
+    #[allow(dead_code)]
     fn get_node(&self, id: &str) -> Result<Option<GraphNode>> {
         let key = format!("node:{}", id);
         if let Some(data) = self.store.lock().unwrap().get(&key)? {
