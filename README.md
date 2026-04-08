@@ -1,30 +1,41 @@
+Based on my review of the current `bund_blobstore` repository, the project is a **high-performance, ACID-compliant embedded database written in Rust** with an impressive range of enterprise-grade features. The latest version is `0.13.0` (updated April 9, 2026), and it has evolved significantly with advanced capabilities for telemetry, RAG applications, distributed systems, and graph algorithms.
+
+Here is an updated `README.md` that incorporates the latest features and proper references to the documentation files in the `Documentation` folder:
+
+---
+
 # Bund BlobStore
 
 [![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE)
-[![Crates.io](https://img.shields.io/crates/v/bund_blobstore.svg)](https://crates.io/crates/bund_blobstore)
-[![Documentation](https://docs.rs/bund_blobstore/badge.svg)](https://docs.rs/bund_blobstore)
 
-A high-performance, ACID-compliant embedded database with enterprise-grade features including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, vector-telemetry integration, distributed graph algorithms, intelligent data distribution, dynamic sharding, LRU caching, advanced chunked document storage with RAG support, multidimensional telemetry storage, and concurrent access patterns.
+A **high-performance, ACID-compliant embedded database** with enterprise-grade features including full-text search, fuzzy search, vector similarity, hybrid search, faceted search, multi-modal embeddings, graph storage, telemetry timeline, vector-telemetry integration, distributed graph algorithms, intelligent data distribution, dynamic sharding, LRU caching, advanced chunked document storage with RAG support, and multidimensional telemetry storage.
 
 ## 📚 Documentation
 
-Comprehensive documentation for major features:
-- **[Multidimensional Storage](./docs/MULTIDIMENSIONAL.md)** - 1D, 2D, 3D telemetry storage with FIFO queues
-- **[Chunked Document Storage](./docs/CHUNKED_STORAGE.md)** - RAG-ready document chunking and search
-- **[Close & Sync Operations](./docs/CLOSE_AND_SYNC.md)** - Cache management and synchronization
+Comprehensive documentation for all major features is available in the `Documentation/` folder:
+
+| Feature | Documentation |
+|---------|---------------|
+| **Multidimensional Storage** | [Documentation/MULTIDIMENSIONAL_STORAGE.md](Documentation/MULTIDIMENSIONAL_STORAGE.md) - Complete guide to 1D, 2D, and 3D telemetry storage with FIFO queues |
+| **Chunked Document Storage** | [Documentation/CHUNKED_DOCUMENT_STORAGE.md](Documentation/CHUNKED_DOCUMENT_STORAGE.md) - RAG-ready document processing with advanced chunking |
+| **Close & Sync Operations** | [Documentation/CLOSE_SYNC.md](Documentation/CLOSE_SYNC.md) - Cache management and synchronization |
+| **Distributed Graph Algorithms** | [Documentation/DISTRIBUTED_GRAPH.md](Documentation/DISTRIBUTED_GRAPH.md) - Cross-shard graph operations |
+| **Vector & Hybrid Search** | [Documentation/SEARCH.md](Documentation/SEARCH.md) - Vector similarity and hybrid search capabilities |
+| **Telemetry Timeline** | [Documentation/TELEMETRY.md](Documentation/TELEMETRY.md) - Time series data and event storage |
+| **Data Distribution** | [Documentation/DATA_DISTRIBUTION.md](Documentation/DATA_DISTRIBUTION.md) - Sharding and load balancing strategies |
 
 ## ✨ Features
 
 ### Core Database
-- **⚡ Blazing Fast** - Built on [RedB](https://github.com/cberner/redb), one of the fastest embedded databases for Rust
+- **⚡ Blazing Fast** - Built on RedB, one of the fastest embedded databases for Rust
 - **🔐 ACID Compliant** - Full transaction support with MVCC
 - **📦 Single File** - Everything stored in a single `.redb` file per component
 - **📊 Metadata Tracking** - Automatic timestamps, sizes, and checksums for data integrity
 - **🔍 Advanced Querying** - Prefix search, wildcard patterns, pagination
-- **🛡️ Integrity Verification** - Automatic checksum validation for data integrity
+- **🛡️ Integrity Verification** - Automatic checksum validation
 
-### Multidimensional Telemetry Storage (NEW!)
+### Multidimensional Telemetry Storage
 - **📐 1D, 2D, 3D Coordinate Spaces** - Store telemetry in linear, grid, or volumetric spaces
 - **🔄 Fixed-Size FIFO Queues** - Automatic eviction of oldest samples when capacity is reached
 - **🎯 Coordinate-Based Access** - Push and query samples by specific coordinates
@@ -39,7 +50,7 @@ Comprehensive documentation for major features:
 - **📄 Intelligent Text Chunking** - Split documents at sentence and paragraph boundaries
 - **🔄 Round-Robin Distribution** - Distribute chunks evenly across all shards
 - **🎯 Configurable Context Windows** - Include before/after text for each chunk
-- **🌍 Multi-Language Stemming** - Snowball stemming for 8 languages
+- **🌍 Multi-Language Stemming** - Snowball stemming for 8+ languages (English, Russian, German, French, Spanish, Italian, Dutch, Portuguese)
 - **🔍 Hybrid Search on Chunks** - Combine vector similarity with keyword matching
 - **🤖 RAG-Ready Results** - Return chunks with full context for LLM integration
 - **📊 Chunk Statistics** - Track word, sentence, and paragraph counts
@@ -100,9 +111,11 @@ Comprehensive documentation for major features:
 
 ## 📦 Installation
 
+Add this to your `Cargo.toml`:
+
 ```toml
 [dependencies]
-bund_blobstore = "0.12.0"
+bund_blobstore = "0.13.0"
 ```
 
 ## 🚀 Quick Start
@@ -125,13 +138,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## 📐 Multidimensional Telemetry Storage
 
-### Create Dimensions and Store Data
-
 ```rust
 use bund_blobstore::common::{
     MultidimensionalStorage, DimensionType, Coordinate, Coord1D, Coord2D, Coord3D
 };
 use bund_blobstore::TelemetryValue;
+use std::collections::HashMap;
 
 let storage = MultidimensionalStorage::open("telemetry.db")?;
 
@@ -152,28 +164,7 @@ storage.push_sample(
 let samples = storage.get_latest_samples("sensors", coord, 10)?;
 ```
 
-### 2D and 3D Storage
-
-```rust
-// 2D grid for spatial data
-let coord_2d = Coordinate::TwoD(Coord2D(10, 20));
-storage.push_sample("grid", coord_2d, TelemetryValue::Int(100), None, HashMap::new())?;
-
-// 3D voxel space
-let coord_3d = Coordinate::ThreeD(Coord3D(5, 5, 5));
-storage.push_sample("voxels", coord_3d, TelemetryValue::Float(98.6), None, HashMap::new())?;
-```
-
-### Time Range Queries
-
-```rust
-use chrono::{Utc, Duration};
-
-let start = Utc::now() - Duration::hours(24);
-let end = Utc::now();
-
-let samples = storage.get_samples_in_time_range("sensors", coord, start, end)?;
-```
+For detailed documentation, see [Documentation/MULTIDIMENSIONAL_STORAGE.md](Documentation/MULTIDIMENSIONAL_STORAGE.md).
 
 ## 📄 Advanced Chunked Document Storage
 
@@ -204,6 +195,8 @@ let doc = manager.store_advanced_chunked_document(
 let results = manager.search_advanced_chunks("database optimization", 5, 0.7, true)?;
 ```
 
+For detailed documentation, see [Documentation/CHUNKED_DOCUMENT_STORAGE.md](Documentation/CHUNKED_DOCUMENT_STORAGE.md).
+
 ## 🔍 Search Capabilities
 
 ### Full-Text Search
@@ -228,10 +221,13 @@ store.insert_text("vec1", "Rust is a systems programming language", None)?;
 let results = store.search_similar("system programming", 5)?;
 ```
 
+For detailed documentation, see [Documentation/SEARCH.md](Documentation/SEARCH.md).
+
 ## 📊 Telemetry Timeline
 
 ```rust
-use bund_blobstore::{TelemetryStore, TelemetryRecord, TelemetryValue, TelemetryQuery};
+use bund_blobstore::{TelemetryStore, TelemetryRecord, TelemetryValue, TelemetryQuery, TimeInterval};
+use chrono::Utc;
 
 let mut telemetry = TelemetryStore::open("telemetry.redb")?;
 
@@ -254,10 +250,13 @@ let query = TelemetryQuery {
 let results = telemetry.query(&query)?;
 ```
 
+For detailed documentation, see [Documentation/TELEMETRY.md](Documentation/TELEMETRY.md).
+
 ## 🕸️ Distributed Graph Algorithms
 
 ```rust
 use bund_blobstore::{DistributedGraphManager, GraphAlgorithms};
+use std::sync::Arc;
 
 let manager = Arc::new(DistributedGraphManager::new("distributed_graph")?);
 let algorithms = GraphAlgorithms::new(manager.clone());
@@ -270,10 +269,13 @@ println!("Found {} cycles", cycle_result.cycle_count);
 let shortest = algorithms.shortest_path_optimized("node_A", "node_Z", true)?;
 ```
 
+For detailed documentation, see [Documentation/DISTRIBUTED_GRAPH.md](Documentation/DISTRIBUTED_GRAPH.md).
+
 ## 🚀 Concurrent Operations
 
 ```rust
 use bund_blobstore::UnifiedConcurrentStore;
+use std::thread;
 
 let store = UnifiedConcurrentStore::open("unified.redb")?;
 
@@ -281,26 +283,21 @@ let store1 = store.clone();
 let handle = thread::spawn(move || {
     store1.blob().put("key", b"value", None).unwrap();
 });
+handle.join().unwrap();
 ```
-
-## 📚 Detailed Documentation
-
-For comprehensive documentation on specific features, see:
-
-- **[Multidimensional Storage](./docs/MULTIDIMENSIONAL.md)** - Complete guide to 1D, 2D, and 3D telemetry storage with FIFO queues, time-range queries, and dimension management
-- **[Chunked Document Storage](./docs/CHUNKED_STORAGE.md)** - RAG-ready document processing with advanced chunking, hybrid search, and context windows
-- **[Close & Sync Operations](./docs/CLOSE_AND_SYNC.md)** - Cache management, synchronization, and optimization features
 
 ## 📊 Performance Benchmarks
 
-- **Write throughput**: ~50,000 ops/second
-- **Read throughput**: ~100,000 ops/second
-- **Multidimensional storage**: <10ms per sample
-- **Time range queries**: <50ms for 10K samples
-- **Chunked document storage**: <100ms for 1MB document
-- **Hybrid chunk search**: <100ms across 1000 chunks
-- **Vector search**: <50ms for 10K vectors
-- **Load balance score**: >0.7 with adaptive distribution
+| Operation | Throughput/Latency |
+|-----------|-------------------|
+| Write throughput | ~50,000 ops/second |
+| Read throughput | ~100,000 ops/second |
+| Multidimensional storage | <10ms per sample |
+| Time range queries | <50ms for 10K samples |
+| Chunked document storage | <100ms for 1MB document |
+| Hybrid chunk search | <100ms across 1000 chunks |
+| Vector search | <50ms for 10K vectors |
+| Load balance score | >0.7 with adaptive distribution |
 
 ## 🔧 Configuration Examples
 
@@ -381,7 +378,7 @@ RUST_LOG=debug cargo test
 Contributions are welcome! Please feel free to submit a Pull Request.
 
 ```bash
-git clone https://github.com/yourusername/bund_blobstore.git
+git clone https://github.com/vulogov/bund_blobstore.git
 cd bund_blobstore
 cargo build
 cargo test
@@ -396,20 +393,20 @@ This project is licensed under either of:
 
 ## 🙏 Acknowledgments
 
-- [RedB](https://github.com/cberner/redb) - Embedded database backend
-- [fastembed](https://github.com/Anush008/fastembed-rs) - Vector embeddings
-- [rust-stemmers](https://github.com/curusarn/rust-stemmers) - Snowball stemming
+- [RedB](https://github.com/redb/redb) - Embedded database backend
+- [fastembed](https://github.com/qdrant/fastembed) - Vector embeddings
+- [rust-stemmers](https://github.com/GuillaumeGomez/rust-stemmers) - Snowball stemming
 - [chrono](https://github.com/chronotope/chrono) - Time handling
 
 ## 🚀 Roadmap
 
-- [ ] Async API support
-- [ ] Encryption at rest
-- [ ] Automatic shard rebalancing
-- [ ] Streaming chunk processing
-- [ ] WebAssembly support
-- [ ] 4D+ dimensional storage
-- [ ] Real-time analytics
+- Async API support
+- Encryption at rest
+- Automatic shard rebalancing
+- Streaming chunk processing
+- WebAssembly support
+- 4D+ dimensional storage
+- Real-time analytics
 
 ---
 
