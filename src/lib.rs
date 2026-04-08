@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod blobstore;
+pub mod common;
 pub mod concurrent;
 pub mod data_distribution;
 pub mod distributed_graph;
@@ -54,9 +55,8 @@ pub use timeline::{
 };
 
 pub use sharding::{
-    AllocationType, CacheConfig, CacheStats, ShardAllocation, ShardConfig, ShardDetail,
-    ShardManager, ShardManagerBuilder, ShardOperation, ShardResult, ShardStatistics,
-    ShardingStrategy,
+    AllocationType, CacheConfig, ShardAllocation, ShardConfig, ShardDetail, ShardManager,
+    ShardManagerBuilder, ShardOperation, ShardResult, ShardStatistics, ShardingStrategy,
 };
 
 pub use vector_timeline::{
@@ -71,9 +71,30 @@ pub use distributed_graph::{
 pub use graph_algorithms::{CycleDetectionResult, GraphAlgorithms, LongestPathResult};
 
 pub use data_distribution::{
-    AdaptiveConfig, BucketStats, ChunkSearchResult, ChunkStatistics, ChunkedDocument,
-    ChunkingConfig, DataDistributionManager, DistributionStats, DistributionStrategy, ShardInfo,
-    SimilarityCluster, SimilarityConfig, TextChunk, TimeBucketConfig, TimeBucketSize,
+    AdaptiveConfig,
+    AdvancedChunkingConfig,
+    BucketStats,
+    CacheStats,
+    CacheType,
+    ChunkSearchResult,
+    ChunkStatistics,
+    ChunkedDocument,
+    ChunkingConfig,
+    DataDistributionManager,
+    DistributionStats,
+    DistributionStrategy,
+    EnhancedChunkSearchResult,
+    EnhancedChunkedDocument,
+    EnhancedTextChunk,
+    ShardHealth,
+    ShardInfo,
+    SimilarityCluster,
+    SimilarityConfig,
+    StemmingLanguage,
+    SystemStats, // Add these
+    TextChunk,
+    TimeBucketConfig,
+    TimeBucketSize,
 };
 
 pub fn version() -> String {

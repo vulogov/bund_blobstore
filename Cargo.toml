@@ -1,6 +1,6 @@
 [package]
 name = "bund_blobstore"
-version = "0.10.0"
+version = "0.12.0"
 edition = "2024"
 description = "Basic support for storing compiled BUND bytecode into an external file"
 license-file = "LICENSE"
@@ -30,6 +30,15 @@ regex = "1.10"  # For pattern matching
 chrono = { version = "0.4.*", features = ["serde"] }
 rust_dynamic = "0.49.0"
 rand = "0.10.0"
+unicode-segmentation = "1.10"
+rust-stemmers = "1.2.0"
+grok = "2.4.1"
+uuid = { version = "1.6", features = ["v4"] }
+tracing = "0.1.44"
+murmurhash3 = "0.0.5"
+reqwest = { version = "0.11", features = ["blocking"] }
+lazy_static = "1.5.0"
+shadow-rs = "1.7.1"
 
 [dev-dependencies]
 tempfile = "3.0"
@@ -37,3 +46,23 @@ tempfile = "3.0"
 [[example]]
 name = "telemetry_sharding_demo"
 path = "examples/telemetry_sharding_demo.rs"
+
+[[example]]
+name = "telemetry_deduplication_demo"
+path = "examples/telemetry_deduplication_demo.rs"
+
+[[example]]
+name = "advanced_deduplication_search"
+path = "examples/advanced_deduplication_search.rs"
+
+[[example]]
+name = "similarity_search_demo"
+path = "examples/similarity_search_demo.rs"
+
+[[example]]
+name = "root_cause_analysis_demo"
+path = "examples/root_cause_analysis_demo.rs"
+
+[[example]]
+name = "hybrid_search_demo"
+path = "examples/hybrid_search_demo.rs"

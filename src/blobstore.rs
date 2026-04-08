@@ -379,6 +379,26 @@ impl BlobStore {
 
         Ok(results[start..end].to_vec())
     }
+    pub fn sync(&self) -> Result<(), redb::Error> {
+        // RedB automatically syncs on commit, but we can create a no-op transaction
+        // to ensure all pending writes are flushed
+        let txn = self.db.begin_write()?;
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Check if store is healthy
+    pub fn is_healthy(&self) -> bool {
+        self.len().is_ok()
+    }
+
+    /// Optimize storage
+    pub fn optimize(&self) -> Result<(), redb::Error> {
+        // RedB automatically compacts, but we can force a checkpoint
+        let txn = self.db.begin_write()?;
+        txn.commit()?;
+        Ok(())
+    }
 }
 
 /// Simple pattern matching with * wildcard

@@ -369,6 +369,22 @@ impl VectorStore {
         }
         vector
     }
+    /// Sync to disk
+    pub fn sync(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.store.sync()?;
+        Ok(())
+    }
+
+    /// Check if store is healthy
+    pub fn is_healthy(&self) -> bool {
+        self.store.len().is_ok()
+    }
+
+    /// Optimize storage
+    pub fn optimize(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.store.optimize()?;
+        Ok(())
+    }
 }
 
 /// Vector store statistics

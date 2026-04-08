@@ -382,6 +382,18 @@ impl SearchableBlobStore {
         })
     }
 
+    /// Optimize the underlying storage
+    pub fn optimize(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.store.optimize()?;
+        Ok(())
+    }
+
+    /// Sync the underlying storage
+    pub fn sync(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.store.sync()?;
+        Ok(())
+    }
+
     pub fn put(&mut self, key: &str, data: &[u8], prefix: Option<&str>) -> Result<(), redb::Error> {
         self.store.put(key, data, prefix)?;
 

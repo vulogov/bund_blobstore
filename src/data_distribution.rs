@@ -1,17 +1,52 @@
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use parking_lot::RwLock;
+use regex::Regex;
+use rust_stemmers::{Algorithm, Stemmer};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::blobstore::{BlobMetadata, BlobStore};
 use crate::search::{FuzzySearchResult, SearchResult, SearchableBlobStore};
 use crate::timeline::{TelemetryQuery, TelemetryRecord, TelemetryValue, TimeInterval};
 use crate::vector::{VectorSearchResult, VectorStore};
 use crate::vector_timeline::{VectorTimeQuery, VectorTimeResult};
+
+#[derive(Debug, Clone)]
+pub enum CacheType {
+    TimeBucket,
+    KeyCluster,
+    All,
+}
+
+#[derive(Debug, Clone)]
+pub struct CacheStats {
+    pub time_bucket_cache_size: usize,
+    pub key_cluster_cache_size: usize,
+    pub total_cache_size: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShardHealth {
+    pub shard_name: String,
+    pub is_healthy: bool,
+    pub key_count: usize,
+    pub last_sync: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SystemStats {
+    pub shard_health: Vec<ShardHealth>,
+    pub cache_stats: CacheStats,
+    pub total_records: usize,
+    pub shard_count: usize,
+    pub distribution_entropy: f64,
+    pub load_balance_score: f64,
+}
 
 /// Distribution strategy types
 #[derive(Debug, Clone)]
@@ -214,6 +249,113 @@ impl Clone for DataDistributionManager {
             chunk_config: self.chunk_config.clone(), // Add this line
         }
     }
+}
+
+// Advanced chunking configuration
+#[derive(Debug, Clone)]
+pub struct AdvancedChunkingConfig {
+    pub chunk_size: usize,           // Target chunk size in characters
+    pub chunk_overlap: usize,        // Overlap between chunks
+    pub min_chunk_size: usize,       // Minimum chunk size
+    pub break_on_sentences: bool,    // Prefer breaking at sentence boundaries
+    pub break_on_paragraphs: bool,   // Prefer breaking at paragraph boundaries
+    pub preserve_metadata: bool,     // Preserve document metadata in chunks
+    pub context_before_chars: usize, // Characters to include before chunk
+    pub context_after_chars: usize,  // Characters to include after chunk
+    pub enable_stemming: bool,       // Enable snowball stemming
+    pub language: StemmingLanguage,  // Language for stemming
+}
+
+impl Default for AdvancedChunkingConfig {
+    fn default() -> Self {
+        AdvancedChunkingConfig {
+            chunk_size: 512,
+            chunk_overlap: 50,
+            min_chunk_size: 100,
+            break_on_sentences: true,
+            break_on_paragraphs: true,
+            preserve_metadata: true,
+            context_before_chars: 100,
+            context_after_chars: 100,
+            enable_stemming: false,
+            language: StemmingLanguage::English,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StemmingLanguage {
+    English,
+    Russian,
+    German,
+    French,
+    Spanish,
+    Italian,
+    Dutch,
+    Portuguese,
+}
+
+impl StemmingLanguage {
+    #[allow(dead_code)]
+    pub fn get_name(&self) -> &'static str {
+        match self {
+            StemmingLanguage::English => "english",
+            StemmingLanguage::Russian => "russian",
+            StemmingLanguage::German => "german",
+            StemmingLanguage::French => "french",
+            StemmingLanguage::Spanish => "spanish",
+            StemmingLanguage::Italian => "italian",
+            StemmingLanguage::Dutch => "dutch",
+            StemmingLanguage::Portuguese => "portuguese",
+        }
+    }
+}
+
+// Enhanced chunk with context
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnhancedTextChunk {
+    pub chunk_id: String,
+    pub text: String,
+    pub context_before: String,       // Text before the chunk
+    pub context_after: String,        // Text after the chunk
+    pub stemmed_text: Option<String>, // Stemmed version for search
+    pub shard: String,
+    pub start_pos: usize,
+    pub end_pos: usize,
+    pub start_sentence: usize,
+    pub end_sentence: usize,
+    pub paragraph_index: usize,
+    pub vector_key: String,
+    pub metadata: HashMap<String, String>,
+}
+
+// Enhanced chunked document
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnhancedChunkedDocument {
+    pub id: String,
+    pub original_text: String,
+    pub chunks: Vec<EnhancedTextChunk>,
+    pub metadata: HashMap<String, String>,
+    pub created_at: DateTime<Utc>,
+    pub word_count: usize,
+    pub sentence_count: usize,
+    pub paragraph_count: usize,
+}
+
+// Search result with enhanced context
+#[derive(Debug, Clone)]
+pub struct EnhancedChunkSearchResult {
+    pub document_id: String,
+    pub chunk_id: String,
+    pub text: String,
+    pub context_before: String,
+    pub context_after: String,
+    pub score: f32,
+    pub vector_score: f32,
+    pub keyword_score: f32,
+    pub combined_score: f32,
+    pub metadata: HashMap<String, String>,
+    pub relevance_context: String, // Full context for RAG
 }
 
 impl DataDistributionManager {
@@ -834,7 +976,7 @@ impl DataDistributionManager {
                 // Increment counter and get previous value
                 let counter = self.round_robin_counter.fetch_add(1, Ordering::SeqCst);
                 let idx = counter % shards.len();
-                println!(
+                log::debug!(
                     "Round-robin: counter={}, idx={}, shards={}",
                     counter,
                     idx,
@@ -1280,12 +1422,6 @@ impl DataDistributionManager {
     /// Get distribution stats (alias)
     pub fn get_stats(&self) -> DistributionStats {
         self.get_distribution_stats()
-    }
-
-    /// Clear caches
-    pub fn clear_caches(&self) {
-        self.time_bucket_cache.write().clear();
-        self.key_clusters.write().clear();
     }
 
     /// Set distribution strategy
@@ -1856,6 +1992,750 @@ impl DataDistributionManager {
             chunk_size: config.chunk_size,
             chunk_overlap: config.chunk_overlap,
         })
+    }
+
+    /// Advanced chunking with sentence and paragraph boundaries
+    pub fn advanced_chunking(
+        &self,
+        text: &str,
+        config: &AdvancedChunkingConfig,
+    ) -> Vec<EnhancedTextChunk> {
+        let mut chunks = Vec::new();
+        let mut paragraphs: Vec<&str> = Vec::new();
+        let text_len = text.len();
+
+        // Split into paragraphs
+        if config.break_on_paragraphs {
+            paragraphs = text.split("\n\n").collect();
+        } else {
+            paragraphs.push(text);
+        }
+
+        let mut global_pos = 0;
+        let mut sentence_index = 0;
+        let sentence_regex = Regex::new(r"[.!?]+[\s\n]+").unwrap();
+
+        for (para_idx, paragraph) in paragraphs.iter().enumerate() {
+            let para_start = global_pos;
+
+            // Split paragraph into sentences
+            let sentences: Vec<&str> = if config.break_on_sentences {
+                sentence_regex.split(paragraph).collect()
+            } else {
+                vec![paragraph]
+            };
+
+            let mut current_chunk = String::new();
+            let mut chunk_start_pos = para_start;
+            let mut chunk_start_sentence = sentence_index;
+
+            for sentence in sentences {
+                let sentence_len = sentence.len();
+
+                if current_chunk.len() + sentence_len > config.chunk_size
+                    && !current_chunk.is_empty()
+                {
+                    // Create chunk with context
+                    let chunk_end_pos = chunk_start_pos + current_chunk.len();
+
+                    // Calculate context windows safely
+                    let context_start = if chunk_start_pos > config.context_before_chars {
+                        chunk_start_pos - config.context_before_chars
+                    } else {
+                        0
+                    };
+                    let context_end = if chunk_end_pos + config.context_after_chars < text_len {
+                        chunk_end_pos + config.context_after_chars
+                    } else {
+                        text_len
+                    };
+
+                    let context_before = if context_start < chunk_start_pos {
+                        text[context_start..chunk_start_pos].to_string()
+                    } else {
+                        String::new()
+                    };
+                    let context_after = if chunk_end_pos < context_end {
+                        text[chunk_end_pos..context_end].to_string()
+                    } else {
+                        String::new()
+                    };
+
+                    let stemmed_text = if config.enable_stemming {
+                        Some(self.stem_text(&current_chunk, config.language))
+                    } else {
+                        None
+                    };
+
+                    chunks.push(EnhancedTextChunk {
+                        chunk_id: format!("chunk_{}_{}", para_idx, chunks.len()),
+                        text: current_chunk.clone(),
+                        context_before,
+                        context_after,
+                        stemmed_text,
+                        shard: String::new(),
+                        start_pos: chunk_start_pos,
+                        end_pos: chunk_end_pos,
+                        start_sentence: chunk_start_sentence,
+                        end_sentence: sentence_index,
+                        paragraph_index: para_idx,
+                        vector_key: String::new(),
+                        metadata: HashMap::new(),
+                    });
+
+                    // Start new chunk with overlap
+                    let overlap_start = if current_chunk.len() > config.chunk_overlap {
+                        current_chunk.len() - config.chunk_overlap
+                    } else {
+                        0
+                    };
+                    current_chunk = current_chunk[overlap_start..].to_string();
+                    chunk_start_pos = chunk_end_pos - (current_chunk.len());
+                    chunk_start_sentence = sentence_index;
+                }
+
+                current_chunk.push_str(sentence);
+                if config.break_on_sentences {
+                    current_chunk.push_str(". ");
+                }
+                global_pos += sentence_len + 2;
+                sentence_index += 1;
+            }
+
+            // Add last chunk
+            if !current_chunk.is_empty() && current_chunk.len() >= config.min_chunk_size {
+                let chunk_end_pos = chunk_start_pos + current_chunk.len();
+
+                let context_start = if chunk_start_pos > config.context_before_chars {
+                    chunk_start_pos - config.context_before_chars
+                } else {
+                    0
+                };
+                let context_end = if chunk_end_pos + config.context_after_chars < text_len {
+                    chunk_end_pos + config.context_after_chars
+                } else {
+                    text_len
+                };
+
+                let context_before = if context_start < chunk_start_pos {
+                    text[context_start..chunk_start_pos].to_string()
+                } else {
+                    String::new()
+                };
+                let context_after = if chunk_end_pos < context_end {
+                    text[chunk_end_pos..context_end].to_string()
+                } else {
+                    String::new()
+                };
+
+                let stemmed_text = if config.enable_stemming {
+                    Some(self.stem_text(&current_chunk, config.language))
+                } else {
+                    None
+                };
+
+                chunks.push(EnhancedTextChunk {
+                    chunk_id: format!("chunk_{}_{}", para_idx, chunks.len()),
+                    text: current_chunk,
+                    context_before,
+                    context_after,
+                    stemmed_text,
+                    shard: String::new(),
+                    start_pos: chunk_start_pos,
+                    end_pos: chunk_end_pos,
+                    start_sentence: chunk_start_sentence,
+                    end_sentence: sentence_index,
+                    paragraph_index: para_idx,
+                    vector_key: String::new(),
+                    metadata: HashMap::new(),
+                });
+            }
+
+            global_pos += 2; // For paragraph separation
+        }
+
+        chunks
+    }
+
+    /// Stem text using snowball
+    fn stem_text(&self, text: &str, language: StemmingLanguage) -> String {
+        let algorithm = match language {
+            StemmingLanguage::English => Algorithm::English,
+            StemmingLanguage::Russian => Algorithm::Russian,
+            StemmingLanguage::German => Algorithm::German,
+            StemmingLanguage::French => Algorithm::French,
+            StemmingLanguage::Spanish => Algorithm::Spanish,
+            StemmingLanguage::Italian => Algorithm::Italian,
+            StemmingLanguage::Dutch => Algorithm::Dutch,
+            StemmingLanguage::Portuguese => Algorithm::Portuguese,
+        };
+
+        let stemmer = Stemmer::create(algorithm);
+
+        // Stem each word individually - stem returns Cow<str>
+        text.split_whitespace()
+            .map(|word| {
+                let stemmed = stemmer.stem(word);
+                stemmed.to_string() // Convert Cow<str> to String directly
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// Store document with advanced chunking
+    pub fn store_advanced_chunked_document(
+        &self,
+        doc_id: &str,
+        text: &str,
+        metadata: HashMap<String, String>,
+        config: &AdvancedChunkingConfig,
+    ) -> Result<EnhancedChunkedDocument, Box<dyn std::error::Error + Send + Sync>> {
+        // Create advanced chunks
+        let mut chunks = self.advanced_chunking(text, config);
+
+        // Distribute chunks across shards using round-robin
+        let start_counter = self
+            .round_robin_counter
+            .fetch_add(chunks.len(), Ordering::SeqCst);
+
+        for (idx, chunk) in chunks.iter_mut().enumerate() {
+            let shard_idx = (start_counter + idx) % self.shard_count();
+            let shard_name = self.get_all_shard_names()[shard_idx].clone();
+            chunk.shard = shard_name.clone();
+
+            let chunk_id = format!("{}_chunk_{}", doc_id, idx);
+            chunk.chunk_id = chunk_id.clone();
+
+            // Store vector embedding
+            let text_for_embedding = if config.enable_stemming {
+                chunk.stemmed_text.as_ref().unwrap_or(&chunk.text)
+            } else {
+                &chunk.text
+            };
+
+            let vector_key = format!("vector:{}", chunk_id);
+            chunk.vector_key = vector_key.clone();
+
+            {
+                let mut vector_stores = self.vector_stores.write();
+                if let Some(vector_store) = vector_stores.get_mut(&shard_name) {
+                    vector_store.insert_text(
+                        &vector_key,
+                        text_for_embedding,
+                        Some("advanced_chunks"),
+                    )?;
+                }
+            }
+
+            // Store chunk text for keyword search
+            {
+                let mut search_stores = self.search_stores.write();
+                if let Some(search_store) = search_stores.get_mut(&shard_name) {
+                    let search_text = if config.enable_stemming {
+                        format!(
+                            "{}\nContext before: {}\nContext after: {}\n{}",
+                            chunk.text,
+                            chunk.context_before,
+                            chunk.context_after,
+                            chunk.stemmed_text.as_ref().unwrap_or(&String::new())
+                        )
+                    } else {
+                        format!(
+                            "{}\nContext before: {}\nContext after: {}",
+                            chunk.text, chunk.context_before, chunk.context_after
+                        )
+                    };
+                    search_store.put_text(&chunk_id, &search_text, Some("advanced_chunks"))?;
+                }
+            }
+
+            // Preserve metadata
+            if config.preserve_metadata {
+                chunk.metadata = metadata.clone();
+            }
+        }
+
+        // Calculate statistics
+        let word_count = text.unicode_words().count();
+        let sentence_regex = Regex::new(r"[.!?]+[\s\n]+").unwrap();
+        let sentence_count = sentence_regex.split(text).count();
+        let paragraph_count = text.split("\n\n").count();
+
+        let doc = EnhancedChunkedDocument {
+            id: doc_id.to_string(),
+            original_text: text.to_string(),
+            chunks,
+            metadata,
+            created_at: Utc::now(),
+            word_count,
+            sentence_count,
+            paragraph_count,
+        };
+
+        // Store document metadata
+        let doc_key = format!("advanced_doc:{}", doc_id);
+        let serialized = serde_json::to_vec(&doc)?;
+
+        let shard_name = self.get_all_shard_names()[start_counter % self.shard_count()].clone();
+        let mut stores = self.stores.write();
+        if let Some(store) = stores.get_mut(&shard_name) {
+            store.put(&doc_key, &serialized, Some("advanced_docs"))?;
+        }
+
+        Ok(doc)
+    }
+
+    /// Search advanced chunks with RAG-friendly context
+    pub fn search_advanced_chunks(
+        &self,
+        query: &str,
+        limit: usize,
+        vector_weight: f32,
+        include_context: bool,
+    ) -> Result<Vec<EnhancedChunkSearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let vector_stores = self.vector_stores.read();
+        let search_stores = self.search_stores.read();
+        let mut results_map: HashMap<String, EnhancedChunkSearchResult> = HashMap::new();
+
+        // Vector search
+        for (_shard_name, vector_store) in vector_stores.iter() {
+            let vector_results = vector_store.search_similar(query, limit * 2)?;
+
+            for result in vector_results {
+                if result.key.starts_with("vector:") {
+                    let chunk_id = result.key.replace("vector:", "");
+                    let doc_id = chunk_id
+                        .split("_chunk_")
+                        .next()
+                        .unwrap_or(&chunk_id)
+                        .to_string();
+
+                    // Get enhanced chunk data
+                    if let Some(doc) = self.get_advanced_chunked_document(&doc_id)? {
+                        if let Some(chunk) = doc.chunks.iter().find(|c| c.chunk_id == chunk_id) {
+                            let relevance_context = if include_context {
+                                format!(
+                                    "[Context Before]\n{}\n\n[Main Content]\n{}\n\n[Context After]\n{}",
+                                    chunk.context_before, chunk.text, chunk.context_after
+                                )
+                            } else {
+                                chunk.text.clone()
+                            };
+
+                            results_map.insert(
+                                chunk_id.clone(),
+                                EnhancedChunkSearchResult {
+                                    document_id: doc_id.clone(),
+                                    chunk_id: chunk_id.clone(),
+                                    text: chunk.text.clone(),
+                                    context_before: chunk.context_before.clone(),
+                                    context_after: chunk.context_after.clone(),
+                                    score: result.score,
+                                    vector_score: result.score,
+                                    keyword_score: 0.0,
+                                    combined_score: result.score * vector_weight,
+                                    metadata: chunk.metadata.clone(),
+                                    relevance_context,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Keyword search
+        for (_shard_name, search_store) in search_stores.iter() {
+            let keyword_results = search_store.search(query, limit * 2)?;
+
+            for result in keyword_results {
+                let chunk_id = result.key.clone();
+                let doc_id = chunk_id
+                    .split("_chunk_")
+                    .next()
+                    .unwrap_or(&chunk_id)
+                    .to_string();
+
+                let entry = results_map.entry(chunk_id.clone()).or_insert_with(|| {
+                    EnhancedChunkSearchResult {
+                        document_id: doc_id.clone(),
+                        chunk_id: chunk_id.clone(),
+                        text: String::new(),
+                        context_before: String::new(),
+                        context_after: String::new(),
+                        score: 0.0,
+                        vector_score: 0.0,
+                        keyword_score: 0.0,
+                        combined_score: 0.0,
+                        metadata: HashMap::new(),
+                        relevance_context: String::new(),
+                    }
+                });
+
+                let keyword_score = (result.score as f32 / 10.0).min(1.0);
+                entry.keyword_score = keyword_score;
+                entry.combined_score =
+                    (entry.vector_score * vector_weight) + (keyword_score * (1.0 - vector_weight));
+                entry.score = entry.combined_score;
+
+                // Get full chunk data if not already loaded
+                if entry.text.is_empty() {
+                    if let Some(doc) = self.get_advanced_chunked_document(&doc_id)? {
+                        if let Some(chunk) = doc.chunks.iter().find(|c| c.chunk_id == chunk_id) {
+                            entry.text = chunk.text.clone();
+                            entry.context_before = chunk.context_before.clone();
+                            entry.context_after = chunk.context_after.clone();
+                            entry.metadata = chunk.metadata.clone();
+                            entry.relevance_context = if include_context {
+                                format!(
+                                    "[Context Before]\n{}\n\n[Main Content]\n{}\n\n[Context After]\n{}",
+                                    chunk.context_before, chunk.text, chunk.context_after
+                                )
+                            } else {
+                                chunk.text.clone()
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        // Convert to vector and sort
+        let mut results: Vec<EnhancedChunkSearchResult> = results_map.into_values().collect();
+        results.sort_by(|a, b| b.combined_score.partial_cmp(&a.combined_score).unwrap());
+        results.truncate(limit);
+
+        Ok(results)
+    }
+
+    /// Get advanced chunked document
+    pub fn get_advanced_chunked_document(
+        &self,
+        doc_id: &str,
+    ) -> Result<Option<EnhancedChunkedDocument>, Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let doc_key = format!("advanced_doc:{}", doc_id);
+
+        for store in stores.values() {
+            if let Some(data) = store.get(&doc_key)? {
+                let doc: EnhancedChunkedDocument = serde_json::from_slice(&data)?;
+                return Ok(Some(doc));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get chunks for RAG context window
+    pub fn get_chunks_for_rag(
+        &self,
+        doc_id: &str,
+        chunk_ids: Vec<String>,
+        context_window_chars: usize,
+    ) -> Result<Vec<EnhancedChunkSearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut results = Vec::new();
+
+        if let Some(doc) = self.get_advanced_chunked_document(doc_id)? {
+            for chunk_id in chunk_ids {
+                if let Some(chunk) = doc.chunks.iter().find(|c| c.chunk_id == chunk_id) {
+                    // Expand context window
+                    let start = if chunk.start_pos > context_window_chars {
+                        chunk.start_pos - context_window_chars
+                    } else {
+                        0
+                    };
+                    let end = if chunk.end_pos + context_window_chars < doc.original_text.len() {
+                        chunk.end_pos + context_window_chars
+                    } else {
+                        doc.original_text.len()
+                    };
+
+                    let expanded_context = doc.original_text[start..end].to_string();
+
+                    results.push(EnhancedChunkSearchResult {
+                        document_id: doc_id.to_string(),
+                        chunk_id: chunk.chunk_id.clone(),
+                        text: chunk.text.clone(),
+                        context_before: chunk.context_before.clone(),
+                        context_after: chunk.context_after.clone(),
+                        score: 1.0,
+                        vector_score: 1.0,
+                        keyword_score: 1.0,
+                        combined_score: 1.0,
+                        metadata: chunk.metadata.clone(),
+                        relevance_context: expanded_context,
+                    });
+                }
+            }
+        }
+
+        Ok(results)
+    }
+    /// Clear all caches (time bucket cache and key clusters)
+    pub fn clear_caches(&self) {
+        let time_bucket_count = self.time_bucket_cache.read().len();
+        let key_cluster_count = self.key_clusters.read().len();
+
+        self.time_bucket_cache.write().clear();
+        self.key_clusters.write().clear();
+
+        log::debug!(
+            "[Cache] Cleared {} time bucket entries and {} key cluster entries",
+            time_bucket_count,
+            key_cluster_count
+        );
+    }
+
+    /// Clear specific cache types
+    pub fn clear_cache_by_type(&self, cache_type: CacheType) {
+        match cache_type {
+            CacheType::TimeBucket => {
+                let count = self.time_bucket_cache.read().len();
+                self.time_bucket_cache.write().clear();
+                log::debug!("[Cache] Cleared {} time bucket cache entries", count);
+            }
+            CacheType::KeyCluster => {
+                let count = self.key_clusters.read().len();
+                self.key_clusters.write().clear();
+                log::debug!("[Cache] Cleared {} key cluster cache entries", count);
+            }
+            CacheType::All => {
+                self.clear_caches();
+            }
+        }
+    }
+
+    /// Get cache statistics
+    pub fn get_cache_stats(&self) -> CacheStats {
+        CacheStats {
+            time_bucket_cache_size: self.time_bucket_cache.read().len(),
+            key_cluster_cache_size: self.key_clusters.read().len(),
+            total_cache_size: self.time_bucket_cache.read().len() + self.key_clusters.read().len(),
+        }
+    }
+
+    /// Sync all shards - ensures data consistency by clearing caches
+    /// and verifying all shards are accessible
+    pub fn sync_all_shards(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("[Sync] Starting sync across all shards...");
+
+        // Clear all caches to ensure fresh reads
+        self.clear_caches();
+
+        let shard_names = self.get_all_shard_names();
+        let mut failed_shards = Vec::new();
+
+        // Verify each shard is accessible
+        for shard_name in &shard_names {
+            match self.verify_shard_accessibility(shard_name) {
+                Ok(true) => log::debug!("[Sync] Shard '{}' is accessible", shard_name),
+                Ok(false) => {
+                    log::warn!("[Sync] Shard '{}' has issues", shard_name);
+                    failed_shards.push(shard_name.clone());
+                }
+                Err(e) => {
+                    log::error!("[Sync] Error accessing shard '{}': {}", shard_name, e);
+                    failed_shards.push(shard_name.clone());
+                }
+            }
+        }
+
+        if !failed_shards.is_empty() {
+            log::warn!(
+                "[Sync] Warning: {} shards have issues: {:?}",
+                failed_shards.len(),
+                failed_shards
+            );
+        } else {
+            log::debug!(
+                "[Sync] All {} shards synced successfully",
+                shard_names.len()
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Sync a specific shard by name
+    pub fn sync_shard(
+        &self,
+        shard_name: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if !self.shard_exists(shard_name) {
+            return Err(format!("Shard '{}' not found", shard_name).into());
+        }
+
+        log::debug!("[Sync] Syncing shard: {}", shard_name);
+
+        // Clear cache entries related to this shard
+        {
+            let mut time_cache = self.time_bucket_cache.write();
+            let before = time_cache.len();
+            time_cache.retain(|_, value| value != shard_name);
+            let after = time_cache.len();
+            if before > after {
+                log::debug!(
+                    "[Sync] Cleared {} time bucket cache entries for shard '{}'",
+                    before - after,
+                    shard_name
+                );
+            }
+        }
+
+        {
+            let mut key_clusters = self.key_clusters.write();
+            let before = key_clusters.len();
+            key_clusters.retain(|_, cluster| cluster.shard != shard_name);
+            let after = key_clusters.len();
+            if before > after {
+                log::debug!(
+                    "[Sync] Cleared {} key cluster entries for shard '{}'",
+                    before - after,
+                    shard_name
+                );
+            }
+        }
+
+        // Verify shard accessibility
+        match self.verify_shard_accessibility(shard_name) {
+            Ok(true) => log::debug!("[Sync] Shard '{}' synced successfully", shard_name),
+            Ok(false) => log::debug!("[Sync] Shard '{}' synced but has issues", shard_name),
+            Err(e) => return Err(format!("Shard '{}' sync failed: {}", shard_name, e).into()),
+        }
+
+        Ok(())
+    }
+    /// Verify shard accessibility by trying to read/write a test key
+    fn verify_shard_accessibility(
+        &self,
+        shard_name: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let test_key = format!(
+            "__sync_test_{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+
+        let mut stores = self.stores.write();
+        if let Some(store) = stores.get_mut(shard_name) {
+            // Try to write a test key
+            store.put(&test_key, b"test", None)?;
+
+            // Try to read it back
+            let data = store.get(&test_key)?;
+            let success = data.is_some() && data.unwrap() == b"test";
+
+            // Clean up
+            store.remove(&test_key)?;
+
+            Ok(success)
+        } else {
+            Ok(false)
+        }
+    }
+    /// Flush all pending operations and sync
+    pub fn flush_and_sync(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("[Flush] Starting flush and sync...");
+
+        // Clear caches first
+        self.clear_caches();
+
+        // Then sync all shards
+        self.sync_all_shards()?;
+
+        log::debug!("[Flush] Flush and sync completed");
+        Ok(())
+    }
+
+    /// Reset and reinitialize the entire distribution manager
+    pub fn reset(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!("[Reset] Resetting DataDistributionManager...");
+
+        // Clear all caches
+        self.clear_caches();
+
+        // Reset round-robin counter
+        self.round_robin_counter.store(0, Ordering::SeqCst);
+
+        // Sync all shards
+        self.sync_all_shards()?;
+
+        // Reset load history
+        self.load_history.write().clear();
+
+        log::debug!("[Reset] Reset completed successfully");
+        Ok(())
+    }
+
+    /// Get shard health status
+    pub fn get_shard_health(&self) -> Vec<ShardHealth> {
+        let stores = self.stores.read();
+        let mut health_status = Vec::new();
+
+        for (shard_name, store) in stores.iter() {
+            let is_healthy = store.len().is_ok();
+            let key_count = store.len().unwrap_or(0);
+
+            health_status.push(ShardHealth {
+                shard_name: shard_name.clone(),
+                is_healthy,
+                key_count,
+                last_sync: Utc::now(),
+            });
+        }
+
+        health_status
+    }
+
+    /// Optimize all shards (compact storage)
+    pub fn optimize_all_shards(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let stores = self.stores.read();
+        let vector_stores = self.vector_stores.read();
+        let search_stores = self.search_stores.read();
+
+        log::debug!("[Optimize] Starting optimization across all shards...");
+
+        // Optimize blob stores
+        for (shard_name, store) in stores.iter() {
+            log::debug!("[Optimize] Optimizing blob store for shard: {}", shard_name);
+            store.optimize()?;
+        }
+
+        // Optimize vector stores
+        for (shard_name, vector_store) in vector_stores.iter() {
+            log::debug!(
+                "[Optimize] Optimizing vector store for shard: {}",
+                shard_name
+            );
+            vector_store.optimize()?;
+        }
+
+        // Optimize search stores
+        for (shard_name, search_store) in search_stores.iter() {
+            log::debug!(
+                "[Optimize] Optimizing search store for shard: {}",
+                shard_name
+            );
+            search_store.optimize()?;
+        }
+
+        log::debug!("[Optimize] Optimization completed");
+        Ok(())
+    }
+
+    /// Get overall system statistics
+    pub fn get_system_stats(&self) -> SystemStats {
+        let shard_health = self.get_shard_health();
+        let cache_stats = self.get_cache_stats();
+        let distribution_stats = self.get_distribution_stats();
+
+        SystemStats {
+            shard_health,
+            cache_stats,
+            total_records: distribution_stats.total_records,
+            shard_count: self.shard_count(),
+            distribution_entropy: distribution_stats.distribution_entropy,
+            load_balance_score: distribution_stats.load_balance_score,
+        }
     }
 }
 
