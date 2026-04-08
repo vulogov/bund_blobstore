@@ -1,6 +1,7 @@
 // src/common/mod.rs
 pub mod embeddings;
 pub mod grok_integration;
+pub mod json_fingerprint;
 pub mod log_ingestor;
 pub mod log_worker_pool;
 pub mod root_cause_analyzer;
@@ -11,6 +12,10 @@ pub use embeddings::{
     normalize_vector, zero_embedding,
 };
 pub use grok_integration::GrokLogParser;
+pub use json_fingerprint::{
+    JsonDocument, JsonFingerprintConfig, JsonFingerprintManager, JsonSearchResult, json_from_str,
+    to_pretty_json,
+};
 pub use log_ingestor::{IngestionStats, LogIngestionConfig, LogIngestor, SimilarityConfig};
 pub use log_worker_pool::{
     IngestionTask, LogWorkerPool, PoolStats, TaskResult, WorkerPoolConfig, start_worker_pool,

@@ -66,3 +66,7 @@ path = "examples/root_cause_analysis_demo.rs"
 [[example]]
 name = "hybrid_search_demo"
 path = "examples/hybrid_search_demo.rs"
+
+[[example]]
+name = "json_fingerprint_demo"
+path = "examples/json_fingerprint_demo.rs"
