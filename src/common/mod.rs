@@ -6,6 +6,7 @@ pub mod log_ingestor;
 pub mod log_worker_pool;
 pub mod multidimensional_storage;
 pub mod root_cause_analyzer;
+pub mod virtual_filesystem;
 
 // Re-export commonly used types
 pub use embeddings::{
@@ -33,3 +34,5 @@ pub use multidimensional_storage::{
     Bounds, Coord1D, Coord2D, Coord3D, Coordinate, DimensionMetadata, DimensionType,
     MultidimensionalStorage, SampleIdQueue, TelemetrySample,
 };
+
+pub use virtual_filesystem::*;
