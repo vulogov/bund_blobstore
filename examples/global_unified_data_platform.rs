@@ -40,7 +40,7 @@ struct GraphEdge {
 // Graph storage wrapper that uses the same manager
 struct ManagedGraphStore {
     _manager: Arc<DataDistributionManager>,
-    store: Mutex<BlobStore>, // Use blob store for persistence
+    store: Mutex<BlobStore>,
 }
 
 impl ManagedGraphStore {
@@ -61,7 +61,7 @@ impl ManagedGraphStore {
             .unwrap()
             .put(&key, &data, Some("graph_nodes"))?)
     }
-    #[allow(dead_code)]
+
     fn get_node(&self, id: &str) -> Result<Option<GraphNode>> {
         let key = format!("node:{}", id);
         if let Some(data) = self.store.lock().unwrap().get(&key)? {
@@ -101,7 +101,6 @@ impl ManagedGraphStore {
     }
 
     fn find_shortest_path(&self, start: &str, end: &str) -> Result<Option<Vec<String>>> {
-        // Simple BFS implementation
         let mut visited = HashMap::new();
         let mut queue = vec![(start.to_string(), vec![start.to_string()])];
         visited.insert(start.to_string(), true);
@@ -129,7 +128,7 @@ impl ManagedGraphStore {
 }
 
 // ============================================
-// LOG STORAGE USING THE MANAGER
+// ENHANCED LOG STORAGE WITH PRIMARY-SECONDARY SEPARATION
 // ============================================
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -138,6 +137,7 @@ enum LogLevel {
     Info,
     Warn,
     Error,
+    Critical,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,41 +147,79 @@ struct LogEntry {
     service: String,
     message: String,
     metadata: HashMap<String, String>,
+    correlation_id: Option<String>,
+    primary: bool, // Primary logs are high-priority, secondary are low-priority
 }
 
-// Log storage wrapper that uses the same manager
+// Enhanced log storage with automatic primary/secondary separation
 struct ManagedLogStore {
     _manager: Arc<DataDistributionManager>,
-    store: Mutex<BlobStore>,
+    primary_store: Mutex<BlobStore>, // High-priority logs (Errors, Critical, specific services)
+    secondary_store: Mutex<BlobStore>, // Low-priority logs (Debug, Info, Warn)
 }
 
 impl ManagedLogStore {
     fn new(manager: Arc<DataDistributionManager>, path: &str) -> Result<Self> {
-        let store = BlobStore::open(path)?;
+        let primary_store = BlobStore::open(&format!("{}_primary", path))?;
+        let secondary_store = BlobStore::open(&format!("{}_secondary", path))?;
         Ok(Self {
             _manager: manager,
-            store: Mutex::new(store),
+            primary_store: Mutex::new(primary_store),
+            secondary_store: Mutex::new(secondary_store),
         })
+    }
+
+    // Automatic classification: determines if log should go to primary or secondary storage
+    fn is_primary_log(&self, log: &LogEntry) -> bool {
+        // Primary logs are:
+        // 1. Critical or Error level logs
+        // 2. Logs explicitly marked as primary
+        // 3. Logs from critical services
+        let critical_services = vec!["database", "payment-processor", "auth-service"];
+
+        log.primary
+            || matches!(log.level, LogLevel::Error | LogLevel::Critical)
+            || critical_services.contains(&log.service.as_str())
     }
 
     fn ingest(&self, log: LogEntry) -> Result<()> {
         let timestamp = log.timestamp.timestamp_nanos_opt().unwrap_or(0);
         let key = format!("log:{}:{}:{}", log.service, timestamp, uuid::Uuid::new_v4());
         let data = serde_json::to_vec(&log)?;
-        Ok(self.store.lock().unwrap().put(&key, &data, Some("logs"))?)
+
+        // Route to appropriate store based on priority
+        if self.is_primary_log(&log) {
+            self.primary_store
+                .lock()
+                .unwrap()
+                .put(&key, &data, Some("primary_logs"))?;
+        } else {
+            self.secondary_store
+                .lock()
+                .unwrap()
+                .put(&key, &data, Some("secondary_logs"))?;
+        }
+
+        Ok(())
     }
 
-    fn query_by_service(&self, service: &str, limit: usize) -> Result<Vec<LogEntry>> {
+    fn query_by_service(
+        &self,
+        service: &str,
+        limit: usize,
+        include_secondary: bool,
+    ) -> Result<Vec<LogEntry>> {
         let prefix = format!("log:{}:", service);
-        let all_keys = self.store.lock().unwrap().list_keys()?;
         let mut logs: Vec<LogEntry> = Vec::new();
 
-        for key in all_keys {
+        // Query primary store
+        let primary_keys = self.primary_store.lock().unwrap().list_keys()?;
+        for key in primary_keys {
             if logs.len() >= limit {
                 break;
             }
             if key.starts_with(&prefix) {
-                if let Some(data) = self.store.lock().unwrap().get(&key)? {
+                if let Some(data) = self.primary_store.lock().unwrap().get(&key)? {
                     if let Ok(log) = serde_json::from_slice(&data) {
                         logs.push(log);
                     }
@@ -189,21 +227,53 @@ impl ManagedLogStore {
             }
         }
 
-        // Sort by timestamp descending
+        // Query secondary store if requested
+        if include_secondary && logs.len() < limit {
+            let secondary_keys = self.secondary_store.lock().unwrap().list_keys()?;
+            for key in secondary_keys {
+                if logs.len() >= limit {
+                    break;
+                }
+                if key.starts_with(&prefix) {
+                    if let Some(data) = self.secondary_store.lock().unwrap().get(&key)? {
+                        if let Ok(log) = serde_json::from_slice(&data) {
+                            logs.push(log);
+                        }
+                    }
+                }
+            }
+        }
+
         logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         Ok(logs)
     }
 
     fn query_by_level(&self, level: LogLevel, limit: usize) -> Result<Vec<LogEntry>> {
-        let all_keys = self.store.lock().unwrap().list_keys()?;
         let mut logs: Vec<LogEntry> = Vec::new();
 
-        for key in all_keys {
+        // Primary logs are more important, check them first
+        let primary_keys = self.primary_store.lock().unwrap().list_keys()?;
+        for key in primary_keys {
             if logs.len() >= limit {
                 break;
             }
-            if key.starts_with("log:") {
-                if let Some(data) = self.store.lock().unwrap().get(&key)? {
+            if let Some(data) = self.primary_store.lock().unwrap().get(&key)? {
+                if let Ok(log) = serde_json::from_slice::<LogEntry>(&data) {
+                    if log.level == level {
+                        logs.push(log);
+                    }
+                }
+            }
+        }
+
+        // Check secondary store if we need more
+        if logs.len() < limit {
+            let secondary_keys = self.secondary_store.lock().unwrap().list_keys()?;
+            for key in secondary_keys {
+                if logs.len() >= limit {
+                    break;
+                }
+                if let Some(data) = self.secondary_store.lock().unwrap().get(&key)? {
                     if let Ok(log) = serde_json::from_slice::<LogEntry>(&data) {
                         if log.level == level {
                             logs.push(log);
@@ -219,16 +289,17 @@ impl ManagedLogStore {
 
     fn get_recent_errors(&self, minutes: i64) -> Result<Vec<LogEntry>> {
         let cutoff = Utc::now() - Duration::minutes(minutes);
-        let all_keys = self.store.lock().unwrap().list_keys()?;
         let mut errors: Vec<LogEntry> = Vec::new();
 
-        for key in all_keys {
-            if key.starts_with("log:") {
-                if let Some(data) = self.store.lock().unwrap().get(&key)? {
-                    if let Ok(log) = serde_json::from_slice::<LogEntry>(&data) {
-                        if log.timestamp >= cutoff && log.level == LogLevel::Error {
-                            errors.push(log);
-                        }
+        // Check primary store first (most likely to have errors)
+        let primary_keys = self.primary_store.lock().unwrap().list_keys()?;
+        for key in primary_keys {
+            if let Some(data) = self.primary_store.lock().unwrap().get(&key)? {
+                if let Ok(log) = serde_json::from_slice::<LogEntry>(&data) {
+                    if log.timestamp >= cutoff
+                        && matches!(log.level, LogLevel::Error | LogLevel::Critical)
+                    {
+                        errors.push(log);
                     }
                 }
             }
@@ -236,6 +307,44 @@ impl ManagedLogStore {
 
         errors.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         Ok(errors)
+    }
+
+    fn get_primary_secondary_stats(&self) -> Result<(usize, usize)> {
+        let primary_count = self.primary_store.lock().unwrap().list_keys()?.len();
+        let secondary_count = self.secondary_store.lock().unwrap().list_keys()?.len();
+        Ok((primary_count, secondary_count))
+    }
+
+    fn get_primary_logs(&self, limit: usize) -> Result<Vec<LogEntry>> {
+        let mut logs: Vec<LogEntry> = Vec::new();
+        let keys = self.primary_store.lock().unwrap().list_keys()?;
+
+        for key in keys.iter().take(limit) {
+            if let Some(data) = self.primary_store.lock().unwrap().get(key)? {
+                if let Ok(log) = serde_json::from_slice(&data) {
+                    logs.push(log);
+                }
+            }
+        }
+
+        logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(logs)
+    }
+
+    fn get_secondary_logs(&self, limit: usize) -> Result<Vec<LogEntry>> {
+        let mut logs: Vec<LogEntry> = Vec::new();
+        let keys = self.secondary_store.lock().unwrap().list_keys()?;
+
+        for key in keys.iter().take(limit) {
+            if let Some(data) = self.secondary_store.lock().unwrap().get(key)? {
+                if let Ok(log) = serde_json::from_slice(&data) {
+                    logs.push(log);
+                }
+            }
+        }
+
+        logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        Ok(logs)
     }
 }
 
@@ -402,55 +511,43 @@ impl ManagedMultidimensionalStorage {
 // ============================================
 
 lazy_static! {
-    // Single global manager for all operations
     static ref MANAGER: Arc<DataDistributionManager> = {
-        let manager = DataDistributionManager::new(
-            "./unified_data_store",
-            DistributionStrategy::RoundRobin,
-        ).expect("Failed to create DataDistributionManager");
+        let manager =
+            DataDistributionManager::new("./unified_data_store", DistributionStrategy::RoundRobin)
+                .expect("Failed to create DataDistributionManager");
 
         Arc::new(manager)
     };
-
-    // All stores use the SAME manager (existing stores preserved)
     static ref BLOB_STORE: ManagedBlobStore = {
         ManagedBlobStore::new(MANAGER.clone(), "./unified_data_store/blobs.redb")
             .expect("Failed to create blob store")
     };
-
     static ref SEARCH_STORE: ManagedSearchStore = {
         ManagedSearchStore::new(MANAGER.clone(), "./unified_data_store/search.redb")
             .expect("Failed to create search store")
     };
-
     static ref VECTOR_STORE: ManagedVectorStore = {
         ManagedVectorStore::new(MANAGER.clone(), "./unified_data_store/vectors.redb")
             .expect("Failed to create vector store")
     };
-
     static ref TELEMETRY_STORE: ManagedTelemetryStore = {
         ManagedTelemetryStore::new(MANAGER.clone(), "./unified_data_store/timeline.redb")
             .expect("Failed to create telemetry store")
     };
-
     static ref MULTIDIM_STORAGE: ManagedMultidimensionalStorage = {
         ManagedMultidimensionalStorage::new(MANAGER.clone(), "./unified_data_store/multidim.redb")
             .expect("Failed to create multidimensional storage")
     };
-
-    // NEW: Graph and Log stores added without removing any existing functionality
     static ref GRAPH_STORE: ManagedGraphStore = {
         ManagedGraphStore::new(MANAGER.clone(), "./unified_data_store/graph.redb")
             .expect("Failed to create graph store")
     };
-
     static ref LOG_STORE: ManagedLogStore = {
-        ManagedLogStore::new(MANAGER.clone(), "./unified_data_store/logs.redb")
+        ManagedLogStore::new(MANAGER.clone(), "./unified_data_store/logs")
             .expect("Failed to create log store")
     };
 }
 
-// Helper function to display strategy
 fn strategy_name(strategy: &DistributionStrategy) -> &'static str {
     match strategy {
         DistributionStrategy::RoundRobin => "RoundRobin",
@@ -478,13 +575,11 @@ fn demo_multidimensional_telemetry() -> Result<()> {
         max_z: None,
     };
 
-    // Create all three dimension types
     MULTIDIM_STORAGE.create_dimension("sensors_1d", DimensionType::OneD, 1000, None)?;
     MULTIDIM_STORAGE.create_dimension("grid_2d", DimensionType::TwoD, 500, Some(bounds_2d))?;
     MULTIDIM_STORAGE.create_dimension("voxels_3d", DimensionType::ThreeD, 1000, None)?;
     println!("✓ Created 1D, 2D, and 3D dimensions");
 
-    // 1D: Linear sensor array (temperature sensors along a line)
     println!("\n  [1D] Linear Sensor Array:");
     for sensor_id in 0..5 {
         let coord = Coordinate::OneD(Coord1D(sensor_id));
@@ -506,7 +601,6 @@ fn demo_multidimensional_telemetry() -> Result<()> {
         );
     }
 
-    // 2D: Grid pattern (pressure sensors in X-Y grid)
     println!("\n  [2D] Pressure Grid (5x5):");
     for x in 0..3 {
         for y in 0..3 {
@@ -526,7 +620,6 @@ fn demo_multidimensional_telemetry() -> Result<()> {
         }
     }
 
-    // 3D: Voxel space (3D volumetric data)
     println!("\n  [3D] Voxel Space (3x3x3):");
     for x in 0..2 {
         for y in 0..2 {
@@ -545,7 +638,6 @@ fn demo_multidimensional_telemetry() -> Result<()> {
     }
     println!("    - Stored 8 voxel samples (2x2x2 subset)");
 
-    // Query and display samples from each dimension
     println!("\n  Query Results:");
     let samples_1d =
         MULTIDIM_STORAGE.get_latest_samples("sensors_1d", Coordinate::OneD(Coord1D(2)), 5)?;
@@ -633,12 +725,10 @@ fn demo_search_and_vectors() -> Result<()> {
     Ok(())
 }
 
-// NEW: Graph storage demo
 fn demo_graph_storage() -> Result<()> {
     println!("\n🕸️ GRAPH STORAGE");
     println!("================");
 
-    // Create nodes
     let nodes = vec![
         GraphNode {
             id: "A".to_string(),
@@ -672,7 +762,6 @@ fn demo_graph_storage() -> Result<()> {
     }
     println!("✓ Added 5 nodes to graph");
 
-    // Create edges
     let edges = vec![
         GraphEdge {
             from: "A".to_string(),
@@ -711,31 +800,40 @@ fn demo_graph_storage() -> Result<()> {
     }
     println!("✓ Added 5 edges to graph");
 
-    // Find shortest path
     if let Some(path) = GRAPH_STORE.find_shortest_path("A", "E")? {
         println!("✓ Shortest path from A to E: {:?}", path);
     }
 
-    // Get edges from node A
     let edges_from_a = GRAPH_STORE.get_edges_from("A")?;
     println!("✓ Node A has {} outgoing edges", edges_from_a.len());
 
     Ok(())
 }
 
-// NEW: Log storage demo
+// ENHANCED: Log storage demo with primary/secondary separation
 fn demo_log_storage() -> Result<()> {
-    println!("\n📝 LOG STORAGE");
-    println!("==============");
+    println!("\n📝 LOG STORAGE WITH PRIMARY/SECONDARY SEPARATION");
+    println!("================================================");
+    println!("Automatic classification:\n");
+    println!("  PRIMARY STORE (High Priority):");
+    println!("    - Error & Critical level logs");
+    println!("    - Critical services (database, payment-processor, auth-service)");
+    println!("    - Explicitly marked primary logs\n");
+    println!("  SECONDARY STORE (Low Priority):");
+    println!("    - Debug, Info, Warn level logs");
+    println!("    - Non-critical services");
+    println!("    - Routine operations\n");
 
-    // Generate logs
+    // Generate logs that will be automatically classified
     let logs = vec![
         LogEntry {
             timestamp: Utc::now(),
             level: LogLevel::Info,
             service: "api-gateway".to_string(),
-            message: "Request processed successfully".to_string(),
+            message: "Routine request processed".to_string(),
             metadata: HashMap::new(),
+            correlation_id: None,
+            primary: false, // Will go to secondary (Info level)
         },
         LogEntry {
             timestamp: Utc::now(),
@@ -743,6 +841,8 @@ fn demo_log_storage() -> Result<()> {
             service: "api-gateway".to_string(),
             message: "Rate limit approaching threshold".to_string(),
             metadata: HashMap::new(),
+            correlation_id: None,
+            primary: false, // Will go to secondary (Warn level)
         },
         LogEntry {
             timestamp: Utc::now(),
@@ -750,39 +850,97 @@ fn demo_log_storage() -> Result<()> {
             service: "database".to_string(),
             message: "Connection pool exhausted".to_string(),
             metadata: HashMap::new(),
+            correlation_id: Some("corr_123".to_string()),
+            primary: false, // Will go to primary due to Error level AND critical service
+        },
+        LogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Critical,
+            service: "payment-processor".to_string(),
+            message: "Payment gateway unreachable".to_string(),
+            metadata: HashMap::new(),
+            correlation_id: Some("corr_456".to_string()),
+            primary: false, // Will go to primary due to Critical level
+        },
+        LogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Debug,
+            service: "auth-service".to_string(),
+            message: "Cache hit for user session".to_string(),
+            metadata: HashMap::new(),
+            correlation_id: None,
+            primary: false, // Will go to primary due to critical service
         },
         LogEntry {
             timestamp: Utc::now(),
             level: LogLevel::Info,
-            service: "auth-service".to_string(),
-            message: "User authentication successful".to_string(),
+            service: "analytics".to_string(),
+            message: "User event tracked".to_string(),
             metadata: HashMap::new(),
+            correlation_id: None,
+            primary: false, // Will go to secondary (non-critical service)
         },
         LogEntry {
             timestamp: Utc::now(),
             level: LogLevel::Error,
-            service: "payment-processor".to_string(),
-            message: "Transaction failed".to_string(),
+            service: "api-gateway".to_string(),
+            message: "Authentication failed for user".to_string(),
             metadata: HashMap::new(),
+            correlation_id: Some("corr_789".to_string()),
+            primary: true, // Explicitly marked as primary
         },
     ];
 
     for log in logs {
         LOG_STORE.ingest(log)?;
     }
-    println!("✓ Ingested 5 log entries");
+    println!("✓ Ingested 7 log entries with automatic classification\n");
 
-    // Query logs by service
-    let api_logs = LOG_STORE.query_by_service("api-gateway", 10)?;
-    println!("✓ Found {} logs for api-gateway", api_logs.len());
+    // Show separation statistics
+    let (primary_count, secondary_count) = LOG_STORE.get_primary_secondary_stats()?;
+    println!("📊 Separation Statistics:");
+    println!("   - Primary store (high priority): {} logs", primary_count);
+    println!(
+        "   - Secondary store (low priority): {} logs",
+        secondary_count
+    );
+    println!(
+        "   - Ratio: {:.1}% primary",
+        (primary_count as f64 / (primary_count + secondary_count) as f64) * 100.0
+    );
 
-    // Query errors
-    let errors = LOG_STORE.query_by_level(LogLevel::Error, 10)?;
-    println!("✓ Found {} error logs", errors.len());
+    // Query primary logs only
+    println!("\n🔴 PRIMARY LOGS (High Priority - Critical for operations):");
+    let primary_logs = LOG_STORE.get_primary_logs(10)?;
+    for log in primary_logs.iter().take(3) {
+        println!("   - [{:?}] {}: {}", log.level, log.service, log.message);
+    }
+
+    // Query secondary logs only
+    println!("\n🟢 SECONDARY LOGS (Low Priority - Routine operations):");
+    let secondary_logs = LOG_STORE.get_secondary_logs(10)?;
+    for log in secondary_logs.iter().take(3) {
+        println!("   - [{:?}] {}: {}", log.level, log.service, log.message);
+    }
+
+    // Query by service (including secondary)
+    println!("\n🔍 Query by service 'api-gateway' (including secondary):");
+    let api_logs = LOG_STORE.query_by_service("api-gateway", 10, true)?;
+    for log in api_logs.iter().take(3) {
+        let store_type = if LOG_STORE.is_primary_log(log) {
+            "PRIMARY"
+        } else {
+            "secondary"
+        };
+        println!("   - [{}] [{:?}] {}", store_type, log.level, log.message);
+    }
 
     // Get recent errors
+    println!("\n🚨 Recent errors and critical issues (last hour):");
     let recent_errors = LOG_STORE.get_recent_errors(60)?;
-    println!("✓ Found {} errors in last hour", recent_errors.len());
+    for log in recent_errors.iter() {
+        println!("   - [{:?}] {}: {}", log.level, log.service, log.message);
+    }
 
     Ok(())
 }
@@ -812,8 +970,8 @@ fn demo_manager_coordination() -> Result<()> {
     println!("  - Vector Store (semantic embeddings)");
     println!("  - Telemetry Store (time-series data)");
     println!("  - Multidimensional Storage (1D/2D/3D telemetry)");
-    println!("  - Graph Store (nodes and edges with path finding) [NEW]");
-    println!("  - Log Store (structured logging with querying) [NEW]");
+    println!("  - Graph Store (nodes and edges with path finding)");
+    println!("  - Log Store with PRIMARY/SECONDARY separation [ENHANCED]");
     println!(
         "\n✓ Distribution strategy: {}",
         strategy_name(&MANAGER.get_strategy())
@@ -821,7 +979,6 @@ fn demo_manager_coordination() -> Result<()> {
     println!("✓ All 7 storage types share the same manager instance");
     println!("✓ ACID compliance maintained across all operations");
 
-    // Store data directly through the manager
     MANAGER.put("direct_key1", b"Direct value 1", None)?;
     MANAGER.put("direct_key2", b"Direct value 2", None)?;
     println!("\n✓ Also stored 2 items directly through DataDistributionManager");
@@ -843,16 +1000,14 @@ fn main() -> Result<()> {
     println!("✨ All 7 storage types share the SAME DataDistributionManager instance");
     println!("📁 Base path: ./unified_data_store\n");
 
-    // Run all demos (existing + new)
     demo_multidimensional_telemetry()?;
     demo_telemetry_timeseries()?;
     demo_search_and_vectors()?;
-    demo_graph_storage()?; // NEW
-    demo_log_storage()?; // NEW
+    demo_graph_storage()?;
+    demo_log_storage()?; // ENHANCED with primary/secondary separation
     demo_blob_storage()?;
     demo_manager_coordination()?;
 
-    // Display final summary
     println!("\n📊 SYSTEM SUMMARY");
     println!("=================");
     println!("✅ SINGLE DataDistributionManager for ALL 7 storage types");
@@ -860,8 +1015,11 @@ fn main() -> Result<()> {
     println!("✅ Time series telemetry with query support");
     println!("✅ Full-text search with relevance scoring");
     println!("✅ Vector similarity search with embeddings");
-    println!("✅ Graph storage with path finding [NEW]");
-    println!("✅ Structured logging with level-based querying [NEW]");
+    println!("✅ Graph storage with path finding");
+    println!("✅ LOG STORAGE with PRIMARY/SECONDARY separation [ENHANCED]");
+    println!("   - Automatic classification based on priority");
+    println!("   - Separate storage for critical vs routine logs");
+    println!("   - Faster querying for high-priority logs");
     println!("✅ Binary blob storage for any data type");
     println!("✅ ACID-compliant transactions across all types");
     println!("✅ Consistent distribution strategy for all data");
