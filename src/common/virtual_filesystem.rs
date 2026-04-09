@@ -270,8 +270,6 @@ impl VirtualFilesystem {
         let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
         let root = self.get_root_node()?;
         let mut current_id = root.id;
-        let mut visited = std::collections::HashSet::new();
-        visited.insert(current_id.clone());
 
         for part in parts {
             let current_node = self.get_node(&current_id)?;
@@ -289,13 +287,7 @@ impl VirtualFilesystem {
 
                     match found {
                         Some(child_id) => {
-                            if visited.contains(&child_id) {
-                                return Err(
-                                    format!("Cycle detected at path segment: {}", part).into()
-                                );
-                            }
                             current_id = child_id;
-                            visited.insert(current_id.clone());
                         }
                         None => return Ok(None),
                     }
@@ -318,6 +310,11 @@ impl VirtualFilesystem {
             return Ok(());
         }
 
+        // Check if already exists
+        if self.resolve_path(path)?.is_some() {
+            return Ok(());
+        }
+
         let path_obj = std::path::Path::new(path);
         let dir_name = path_obj
             .file_name()
@@ -333,29 +330,16 @@ impl VirtualFilesystem {
         let parent_path_str = parent_path.to_str().unwrap_or("/");
 
         // Ensure parent exists
-        if parent_path_str != "/" {
-            let parent_exists = self.resolve_path(parent_path_str)?.is_some();
-            if !parent_exists {
-                // Recursively create parent
-                self.mkdir(parent_path_str)?;
-            }
-        }
-
-        // Get parent ID
         let parent_id = if parent_path_str == "/" {
             let root = self.get_root_node()?;
             root.id
         } else {
-            match self.resolve_path(parent_path_str)? {
-                Some(id) => id,
-                None => return Err(format!("Parent path not found: {}", parent_path_str).into()),
+            // Check if parent exists
+            if self.resolve_path(parent_path_str)?.is_none() {
+                self.mkdir(parent_path_str)?;
             }
+            self.resolve_path(parent_path_str)?.unwrap()
         };
-
-        // Check if directory already exists
-        if self.resolve_path(path)?.is_some() {
-            return Ok(());
-        }
 
         // Create the directory
         let dir_node = VfsNode::new_folder(dir_name, Some(parent_id.clone()));
@@ -407,21 +391,19 @@ impl VirtualFilesystem {
         let parent_path = path_obj.parent().unwrap_or(std::path::Path::new("/"));
         let parent_path_str = parent_path.to_str().unwrap_or("/");
 
-        // Get parent ID (create if doesn't exist)
+        // Ensure parent exists
         let parent_id = if parent_path_str == "/" {
             let root = self.get_root_node()?;
             root.id
         } else {
-            if let Some(id) = self.resolve_path(parent_path_str)? {
-                id
-            } else {
+            if self.resolve_path(parent_path_str)?.is_none() {
                 self.mkdir(parent_path_str)?;
-                self.resolve_path(parent_path_str)?.unwrap()
             }
+            self.resolve_path(parent_path_str)?.unwrap()
         };
 
         // Remove existing if present
-        if let Some(_existing_id) = self.resolve_path(path)? {
+        if self.resolve_path(path)?.is_some() {
             self.rm(path)?;
         }
 
@@ -440,12 +422,7 @@ impl VirtualFilesystem {
 
         Ok(())
     }
-    fn count_words(text: &str) -> usize {
-        text.split_whitespace()
-            .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()))
-            .filter(|w| !w.is_empty())
-            .count()
-    }
+
     pub fn mktext(&self, path: &str, content: &str, language: &str) -> VfsResult<()> {
         self.init_root()?;
 
@@ -467,17 +444,19 @@ impl VirtualFilesystem {
             let root = self.get_root_node()?;
             root.id
         } else {
-            if let Some(id) = self.resolve_path(parent_path_str)? {
-                id
-            } else {
+            if self.resolve_path(parent_path_str)?.is_none() {
                 self.mkdir(parent_path_str)?;
-                self.resolve_path(parent_path_str)?.unwrap()
             }
+            self.resolve_path(parent_path_str)?.unwrap()
         };
 
         let doc_id = uuid::Uuid::new_v4().to_string();
         let chunk_count = self.store_chunked_document(&doc_id, content, language)?;
-        let word_count = Self::count_words(content);
+        let word_count = content
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| c.is_ascii_punctuation()))
+            .filter(|w| !w.is_empty())
+            .count();
 
         let doc_node = VfsNode::new_text(
             text_name,
@@ -514,12 +493,10 @@ impl VirtualFilesystem {
             let root = self.get_root_node()?;
             root.id
         } else {
-            if let Some(id) = self.resolve_path(parent_path_str)? {
-                id
-            } else {
+            if self.resolve_path(parent_path_str)?.is_none() {
                 self.mkdir(parent_path_str)?;
-                self.resolve_path(parent_path_str)?.unwrap()
             }
+            self.resolve_path(parent_path_str)?.unwrap()
         };
 
         let json_id = uuid::Uuid::new_v4().to_string();
@@ -560,12 +537,10 @@ impl VirtualFilesystem {
             let root = self.get_root_node()?;
             root.id
         } else {
-            if let Some(id) = self.resolve_path(parent_path_str)? {
-                id
-            } else {
+            if self.resolve_path(parent_path_str)?.is_none() {
                 self.mkdir(parent_path_str)?;
-                self.resolve_path(parent_path_str)?.unwrap()
             }
+            self.resolve_path(parent_path_str)?.unwrap()
         };
 
         let code_id = uuid::Uuid::new_v4().to_string();
@@ -702,12 +677,10 @@ impl VirtualFilesystem {
             let root = self.get_root_node()?;
             root.id
         } else {
-            if let Some(id) = self.resolve_path(parent_path_str)? {
-                id
-            } else {
+            if self.resolve_path(parent_path_str)?.is_none() {
                 self.mkdir(parent_path_str)?;
-                self.resolve_path(parent_path_str)?.unwrap()
             }
+            self.resolve_path(parent_path_str)?.unwrap()
         };
 
         let link_node = VfsNode {
