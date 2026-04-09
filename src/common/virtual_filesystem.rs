@@ -246,6 +246,7 @@ impl VirtualFilesystem {
         if !parent.children.contains(&child_id.to_string()) {
             parent.children.push(child_id.to_string());
             parent.modified_at = Utc::now();
+            // This save_node call is critical - it must persist the updated parent
             self.save_node(&parent)?;
         }
         Ok(())
@@ -310,7 +311,7 @@ impl VirtualFilesystem {
             return Ok(());
         }
 
-        // Check if already exists
+        // Check if already exists - use resolve_path directly
         if self.resolve_path(path)?.is_some() {
             return Ok(());
         }
@@ -329,22 +330,31 @@ impl VirtualFilesystem {
         let parent_path = path_obj.parent().unwrap_or(std::path::Path::new("/"));
         let parent_path_str = parent_path.to_str().unwrap_or("/");
 
-        // Ensure parent exists
+        // Get parent ID
         let parent_id = if parent_path_str == "/" {
             let root = self.get_root_node()?;
             root.id
         } else {
-            // Check if parent exists
+            // Ensure parent exists
             if self.resolve_path(parent_path_str)?.is_none() {
                 self.mkdir(parent_path_str)?;
             }
-            self.resolve_path(parent_path_str)?.unwrap()
+            match self.resolve_path(parent_path_str)? {
+                Some(id) => id,
+                None => return Err(format!("Parent path not found: {}", parent_path_str).into()),
+            }
         };
 
         // Create the directory
         let dir_node = VfsNode::new_folder(dir_name, Some(parent_id.clone()));
         self.save_node(&dir_node)?;
         self.add_child(&parent_id, &dir_node.id)?;
+
+        // Verify creation
+        debug_assert!(
+            self.resolve_path(path)?.is_some(),
+            "Directory was not created successfully"
+        );
 
         Ok(())
     }
@@ -648,7 +658,9 @@ impl VirtualFilesystem {
         if path == "/" || path.is_empty() {
             return Ok(true);
         }
-        Ok(self.resolve_path(path)?.is_some())
+        // Call resolve_path directly without any caching
+        let result = self.resolve_path(path)?;
+        Ok(result.is_some())
     }
 
     pub fn link(&self, target_path: &str, link_path: &str) -> VfsResult<()> {
