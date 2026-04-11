@@ -5,8 +5,8 @@ use rust_stemmers::{Algorithm, Stemmer};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -221,16 +221,17 @@ pub struct ChunkSearchResult {
 /// Data distribution manager
 pub struct DataDistributionManager {
     shards: Arc<RwLock<Vec<ShardInfo>>>,
-    stores: Arc<RwLock<HashMap<String, BlobStore>>>,
+    pub stores: Arc<RwLock<HashMap<String, BlobStore>>>,
     vector_stores: Arc<RwLock<HashMap<String, VectorStore>>>,
     search_stores: Arc<RwLock<HashMap<String, SearchableBlobStore>>>,
     strategy: Arc<RwLock<DistributionStrategy>>,
-    round_robin_counter: Arc<AtomicUsize>,
+    round_robin_counter: Arc<AtomicUsize>, // kept for load-balancing writes
     time_bucket_cache: Arc<RwLock<HashMap<String, String>>>,
     key_clusters: Arc<RwLock<HashMap<String, SimilarityCluster>>>,
     load_history: Arc<RwLock<VecDeque<HashMap<String, usize>>>>,
     adaptive_config: AdaptiveConfig,
     chunk_config: Arc<RwLock<ChunkingConfig>>,
+    pub global_lock: std::sync::Mutex<()>,
 }
 
 impl Clone for DataDistributionManager {
@@ -239,14 +240,15 @@ impl Clone for DataDistributionManager {
             shards: self.shards.clone(),
             stores: self.stores.clone(),
             vector_stores: self.vector_stores.clone(),
-            search_stores: self.search_stores.clone(), // Add this line
+            search_stores: self.search_stores.clone(),
             strategy: self.strategy.clone(),
             round_robin_counter: self.round_robin_counter.clone(),
             time_bucket_cache: self.time_bucket_cache.clone(),
             key_clusters: self.key_clusters.clone(),
             load_history: self.load_history.clone(),
             adaptive_config: self.adaptive_config.clone(),
-            chunk_config: self.chunk_config.clone(), // Add this line
+            chunk_config: self.chunk_config.clone(),
+            global_lock: Mutex::new(()),
         }
     }
 }
@@ -376,6 +378,7 @@ impl DataDistributionManager {
             let shard_name = format!("shard_{}", i);
             let shard_path = base_path.join(&shard_name);
             std::fs::create_dir_all(&shard_path)?;
+
             let store = BlobStore::open(shard_path.join("data.redb"))?;
             let vector_store = VectorStore::open(shard_path.join("vectors.redb"))?;
             let search_store = SearchableBlobStore::open(shard_path.join("search.redb"))?;
@@ -402,6 +405,7 @@ impl DataDistributionManager {
             load_history: Arc::new(RwLock::new(VecDeque::new())),
             adaptive_config: AdaptiveConfig::default(),
             chunk_config: Arc::new(RwLock::new(ChunkingConfig::default())),
+            global_lock: Mutex::new(()),
         })
     }
 
@@ -449,6 +453,7 @@ impl DataDistributionManager {
             load_history: Arc::new(RwLock::new(VecDeque::new())),
             adaptive_config: AdaptiveConfig::default(),
             chunk_config: Arc::new(RwLock::new(ChunkingConfig::default())),
+            global_lock: Mutex::new(()),
         })
     }
 
@@ -457,14 +462,10 @@ impl DataDistributionManager {
         &self,
         key: &str,
         data: &[u8],
-        _timestamp: Option<DateTime<Utc>>,
+        timestamp: Option<DateTime<Utc>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Get the shard name first (this will increment the counter)
-        let shard_name = self.get_target_shard(key, _timestamp)?;
+        let shard_name = self.get_target_shard(key, timestamp)?;
 
-        log::debug!("Putting key '{}' into shard '{}'", key, shard_name); // Debug output
-
-        // Get a clone of the store
         let mut store = {
             let stores = self.stores.read();
             stores.get(&shard_name).ok_or("Shard not found")?.clone()
@@ -472,16 +473,29 @@ impl DataDistributionManager {
 
         store.put(key, data, None)?;
 
-        // Update key count
-        {
-            let mut shards = self.shards.write();
-            if let Some(shard) = shards.iter_mut().find(|s| s.name == shard_name) {
-                shard.key_count += 1;
-            }
+        // Update shard stats
+
+        let mut shards = self.shards.write();
+        if let Some(shard) = shards.iter_mut().find(|s| s.name == shard_name) {
+            shard.key_count += 1;
         }
 
-        self.update_load_history();
+        // self.update_load_history();
         Ok(())
+    }
+    pub fn get(
+        &self,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+        let shard_name = self.get_target_shard(key, None)?;
+
+        let stores = self.stores.read();
+        if let Some(store) = stores.get(&shard_name) {
+            if let Some(data) = store.get(key)? {
+                return Ok(Some(data));
+            }
+        }
+        Ok(None)
     }
 
     /// Store telemetry record
@@ -585,20 +599,6 @@ impl DataDistributionManager {
         Ok(None)
     }
 
-    /// Retrieve data
-    pub fn get(
-        &self,
-        key: &str,
-    ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-        let stores = self.stores.read();
-        for store in stores.values() {
-            if let Some(data) = store.get(key)? {
-                return Ok(Some(data));
-            }
-        }
-        Ok(None) // Return None, not ()
-    }
-
     /// Get with metadata
     pub fn get_with_metadata(
         &self,
@@ -617,8 +617,9 @@ impl DataDistributionManager {
 
     /// Delete data
     pub fn delete(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let shard_name = self.get_target_shard(key, None)?;
         let mut stores = self.stores.write();
-        for store in stores.values_mut() {
+        if let Some(store) = stores.get_mut(&shard_name) {
             if store.exists(key)? {
                 return Ok(store.remove(key)?);
             }
@@ -628,11 +629,10 @@ impl DataDistributionManager {
 
     /// Check if key exists
     pub fn exists(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let shard_name = self.get_target_shard(key, None)?;
         let stores = self.stores.read();
-        for store in stores.values() {
-            if store.exists(key)? {
-                return Ok(true);
-            }
+        if let Some(store) = stores.get(&shard_name) {
+            return Ok(store.exists(key)?);
         }
         Ok(false)
     }
@@ -952,20 +952,16 @@ impl DataDistributionManager {
     }
 
     /// Get target shard for a key
-    fn get_target_shard(
+    pub fn get_target_shard(
         &self,
         key: &str,
-        timestamp: Option<DateTime<Utc>>,
+        _timestamp: Option<DateTime<Utc>>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let strategy = {
-            let strategy_guard = self.strategy.read();
-            strategy_guard.clone()
-        };
-
-        let shards = {
-            let shards_guard = self.shards.read();
-            shards_guard.clone()
-        };
+        if key.starts_with("vfs/node/") {
+            return Ok("shard_0".to_string()); // NO COUNTERS, NO LOGIC. JUST SHARD_0.
+        }
+        let strategy = { self.strategy.read().clone() };
+        let shards = { self.shards.read().clone() };
 
         if shards.is_empty() {
             return Err("No shards available".into());
@@ -973,25 +969,17 @@ impl DataDistributionManager {
 
         let idx = match strategy {
             DistributionStrategy::RoundRobin => {
-                // Increment counter and get previous value
-                let counter = self.round_robin_counter.fetch_add(1, Ordering::SeqCst);
-                let idx = counter % shards.len();
-                log::debug!(
-                    "Round-robin: counter={}, idx={}, shards={}",
-                    counter,
-                    idx,
-                    shards.len()
-                );
-                idx
+                // STABLE shard selection – key hash guarantees put/get go to the same shard
+                self.hash_string(key) % shards.len()
             }
             DistributionStrategy::TimeBucket(config) => {
-                self.get_time_bucket_index(key, timestamp, &config, &shards)
+                self.get_time_bucket_index(key, _timestamp, &config, &shards)
             }
             DistributionStrategy::KeySimilarity(config) => {
                 self.get_key_similarity_index(key, &config, &shards)
             }
             DistributionStrategy::Adaptive(config) => {
-                self.get_adaptive_index(key, timestamp, &config, &shards)
+                self.get_adaptive_index(key, _timestamp, &config, &shards)
             }
         };
 
@@ -2564,38 +2552,37 @@ impl DataDistributionManager {
         if !self.shard_exists(shard_name) {
             return Err(format!("Shard '{}' not found", shard_name).into());
         }
-
         log::debug!("[Sync] Syncing shard: {}", shard_name);
-
+        let store = {
+            let stores = self.stores.read();
+            stores.get(shard_name).ok_or("Store not found")?.clone()
+        };
+        store.sync()?;
         // Clear cache entries related to this shard
-        {
-            let mut time_cache = self.time_bucket_cache.write();
-            let before = time_cache.len();
-            time_cache.retain(|_, value| value != shard_name);
-            let after = time_cache.len();
-            if before > after {
-                log::debug!(
-                    "[Sync] Cleared {} time bucket cache entries for shard '{}'",
-                    before - after,
-                    shard_name
-                );
-            }
+
+        let mut time_cache = self.time_bucket_cache.write();
+        let before = time_cache.len();
+        time_cache.retain(|_, value| value != shard_name);
+        let after = time_cache.len();
+        if before > after {
+            log::debug!(
+                "[Sync] Cleared {} time bucket cache entries for shard '{}'",
+                before - after,
+                shard_name
+            );
         }
 
-        {
-            let mut key_clusters = self.key_clusters.write();
-            let before = key_clusters.len();
-            key_clusters.retain(|_, cluster| cluster.shard != shard_name);
-            let after = key_clusters.len();
-            if before > after {
-                log::debug!(
-                    "[Sync] Cleared {} key cluster entries for shard '{}'",
-                    before - after,
-                    shard_name
-                );
-            }
+        let mut key_clusters = self.key_clusters.write();
+        let before = key_clusters.len();
+        key_clusters.retain(|_, cluster| cluster.shard != shard_name);
+        let after = key_clusters.len();
+        if before > after {
+            log::debug!(
+                "[Sync] Cleared {} key cluster entries for shard '{}'",
+                before - after,
+                shard_name
+            );
         }
-
         // Verify shard accessibility
         match self.verify_shard_accessibility(shard_name) {
             Ok(true) => log::debug!("[Sync] Shard '{}' synced successfully", shard_name),
