@@ -1,6 +1,6 @@
 [package]
 name = "bund_blobstore"
-version = "0.14.0"
+version = "0.14.2"
 edition = "2024"
 description = "Basic support for storing compiled BUND bytecode into an external file"
 license-file = "LICENSE"
