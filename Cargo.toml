@@ -74,3 +74,7 @@ path = "examples/json_fingerprint_demo.rs"
 [[example]]
 name = "multidimensional_demo"
 path = "examples/multidimensional_demo.rs"
+
+[[example]]
+name = "vfs_demo"
+path = "examples/vfs_demo.rs"
