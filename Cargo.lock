@@ -259,6 +259,7 @@ dependencies = [
  "chrono",
  "crossbeam",
  "dashmap",
+ "easy-error",
  "fastembed",
  "flate2",
  "fxhash",
