@@ -1,7 +1,3 @@
-This updated `README.md` provides a balanced, comprehensive view of the `bund_blobstore` ecosystem. It highlights the high-level **Virtual Filesystem** while diving deep into the technical power of the **DataDistributionManager**, **JSON Fingerprinting**, and **Sharded Text** capabilities.
-
------
-
 # Bund BlobStore
 
 [](https://www.rust-lang.org)
