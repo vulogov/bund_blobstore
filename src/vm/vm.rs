@@ -1,5 +1,7 @@
 extern crate log;
 
+use crate::vm::stdlib::init_bund_stdlib;
+
 use bundcore::bundcore::Bund;
 use easy_error::{Error, bail};
 
@@ -12,4 +14,8 @@ pub fn init_adam() -> Result<(), Error> {
         },
     }
     Ok(())
+}
+
+pub fn init_stdlib(vm: &mut Bund) -> Result<(), Error> {
+    init_bund_stdlib(vm)
 }
