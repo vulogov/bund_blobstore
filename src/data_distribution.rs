@@ -234,6 +234,7 @@ pub struct DataDistributionManager {
     adaptive_config: AdaptiveConfig,
     chunk_config: Arc<RwLock<ChunkingConfig>>,
     pub global_lock: std::sync::Mutex<()>,
+    pub routing_table: Arc<RwLock<HashMap<String, String>>>,
 }
 
 impl Clone for DataDistributionManager {
@@ -251,6 +252,22 @@ impl Clone for DataDistributionManager {
             adaptive_config: self.adaptive_config.clone(),
             chunk_config: self.chunk_config.clone(),
             global_lock: Mutex::new(()),
+            routing_table: self.routing_table.clone(),
+        }
+    }
+}
+
+impl Drop for DataDistributionManager {
+    fn drop(&mut self) {
+        // We use a best-effort flush during drop.
+        // Since drop cannot return a Result, we log errors instead of panicking.
+        if let Err(e) = self.flush_and_sync() {
+            log::error!(
+                "[DataDistributionManager] Failed to flush shards during drop: {}",
+                e
+            );
+        } else {
+            log::debug!("[DataDistributionManager] Successfully flushed all shards during drop.");
         }
     }
 }
@@ -385,6 +402,7 @@ impl DataDistributionManager {
             load_history: Arc::new(RwLock::new(VecDeque::new())),
             adaptive_config: AdaptiveConfig::default(),
             chunk_config: Arc::new(RwLock::new(ChunkingConfig::default())),
+            routing_table: Arc::new(RwLock::new(HashMap::new())),
             global_lock: Mutex::new(()),
         };
 
@@ -403,8 +421,9 @@ impl DataDistributionManager {
     /// Internal helper for discovering shards already on disk
     fn discover_existing_shards(
         &self,
-        base_path: &Path,
+        base_path: &std::path::Path,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 1. Existing shard discovery
         for entry in std::fs::read_dir(base_path)? {
             let path = entry?.path();
             if path.is_dir() {
@@ -414,6 +433,30 @@ impl DataDistributionManager {
                 }
             }
         }
+
+        // 2. Load the index from shard_0 (The Metadata Master)
+        let master_shard_name = "shard_0";
+
+        // No .map_err() because parking_lot doesn't return Result
+        let master_store = self.stores.read().get(master_shard_name).cloned();
+
+        if let Some(store) = master_store {
+            // Handle Result<Option<Vec<u8>>> correctly
+            if let Ok(Some(index_bytes)) = store.get("system.index") {
+                let content = String::from_utf8_lossy(&index_bytes);
+
+                let mut table = self.routing_table.write();
+                for line in content.lines() {
+                    if let Some((key, shard)) = line.split_once(':') {
+                        table.insert(key.to_string(), shard.to_string());
+                    }
+                }
+                // Set counter so next write continues the rotation
+                self.round_robin_counter
+                    .store(table.len(), std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
         Ok(())
     }
     /// Internal helper to initialize and register a shard
@@ -491,6 +534,7 @@ impl DataDistributionManager {
             adaptive_config: AdaptiveConfig::default(),
             chunk_config: Arc::new(RwLock::new(ChunkingConfig::default())),
             global_lock: Mutex::new(()),
+            routing_table: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -501,7 +545,7 @@ impl DataDistributionManager {
         data: &[u8],
         timestamp: Option<DateTime<Utc>>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let shard_name = self.get_target_shard(key, timestamp)?;
+        let shard_name = self.get_target_shard(key, timestamp, true)?;
 
         {
             let mut stores = self.stores.write();
@@ -524,32 +568,20 @@ impl DataDistributionManager {
         &self,
         key: &str,
     ) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-        // In Adaptive mode, the key might have been redirected.
-        // If we don't find it in the "calculated" shard, we check others.
-        let target_shard = self.get_target_shard(key, None)?;
-
         let stores = self.stores.read();
 
-        // 1. Try the primary target
-        if let Some(store) = stores.get(&target_shard) {
-            if let Some(data) = store
-                .get(key)
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-            {
-                return Ok(Some(data));
-            }
-        }
+        // For Metadata/Index keys, Round-Robin is dangerous.
+        // We should check all stores if we want the most recent version.
+        // This is especially true if multiple shards could contain the same key.
 
-        // 2. Fallback: If not found (due to adaptive shift), check other shards
-        // This prevents the 'None' assertion failure in your tests.
-        for (name, store) in stores.iter() {
-            if name == &target_shard {
-                continue;
-            }
-            if let Some(data) = store
-                .get(key)
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
-            {
+        let _latest_data: Option<Vec<u8>> = None;
+
+        // Scan all shards. If it's a metadata key, we want the most recent one.
+        // (Or just the first one found if keys are unique across shards)
+        for (_name, store) in stores.iter() {
+            if let Some(data) = store.get(key).map_err(|e| Box::new(e))? {
+                // If you have a timestamp/versioning, compare here.
+                // Otherwise, return the first one found.
                 return Ok(Some(data));
             }
         }
@@ -563,7 +595,7 @@ impl DataDistributionManager {
         record: TelemetryRecord,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let timestamp = Some(record.timestamp());
-        let shard_name = self.get_target_shard(&record.key, timestamp)?;
+        let shard_name = self.get_target_shard(&record.key, timestamp, true)?;
         let mut stores = self.stores.write();
         let store = stores.get_mut(&shard_name).ok_or("Shard not found")?;
 
@@ -585,7 +617,7 @@ impl DataDistributionManager {
         primary_id: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let timestamp = Some(record.timestamp());
-        let shard_name = self.get_target_shard(&record.key, timestamp)?;
+        let shard_name = self.get_target_shard(&record.key, timestamp, true)?;
         let mut stores = self.stores.write();
         let store = stores.get_mut(&shard_name).ok_or("Shard not found")?;
 
@@ -676,11 +708,28 @@ impl DataDistributionManager {
 
     /// Delete data
     pub fn delete(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let shard_name = self.get_target_shard(key, None)?;
+        let target_shard = self.get_target_shard(key, None, true)?;
         let mut stores = self.stores.write();
-        if let Some(store) = stores.get_mut(&shard_name) {
-            if store.exists(key)? {
-                return Ok(store.remove(key)?);
+
+        if let Some(store) = stores.get_mut(&target_shard) {
+            // Just return the bool directly
+            if store
+                .remove(key)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            {
+                return Ok(true);
+            }
+        }
+
+        for (name, store) in stores.iter_mut() {
+            if name == &target_shard {
+                continue;
+            }
+            if store
+                .remove(key)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?
+            {
+                return Ok(true);
             }
         }
         Ok(false)
@@ -689,7 +738,7 @@ impl DataDistributionManager {
     /// Check if a key exists across the distribution
     pub fn exists(&self, key: &str) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         // 1. Calculate the primary target
-        let target_shard = self.get_target_shard(key, None)?;
+        let target_shard = self.get_target_shard(key, None, false)?;
 
         let stores = self.stores.read();
 
@@ -720,7 +769,25 @@ impl DataDistributionManager {
 
         Ok(false)
     }
+    pub fn list_all_keys(&self) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut all_keys = Vec::new();
+        let stores = self.stores.read();
 
+        for store in stores.values() {
+            let keys = store.list_keys()?; // Assuming your BlobStore has this
+            for key in keys {
+                // THE FIX: Ignore the internal routing index
+                if key != "system.index" {
+                    all_keys.push(key);
+                }
+            }
+        }
+
+        // De-duplicate if shards overlap
+        all_keys.sort();
+        all_keys.dedup();
+        Ok(all_keys)
+    }
     /// Query telemetry across shards
     pub fn query_telemetry(
         &self,
@@ -1002,38 +1069,101 @@ impl DataDistributionManager {
         stats.sort_by(|a, b| a.bucket.cmp(&b.bucket));
         Ok(stats)
     }
-
+    /// Return a list of potential shards
+    pub fn get_all_potential_shards(&self, _key: &str) -> Vec<String> {
+        let shards = self.shards.read();
+        // In Round Robin, it could be ANYWHERE.
+        // True discovery means returning all shard names.
+        shards.iter().map(|s| s.name.clone()).collect()
+    }
     /// Get target shard for a key
     pub fn get_target_shard(
         &self,
         key: &str,
-        timestamp: Option<DateTime<Utc>>,
+        _ts: Option<chrono::DateTime<chrono::Utc>>,
+        is_write: bool,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let shards = self.shards.read();
-        if shards.is_empty() {
+        let shard_names: Vec<String> = {
+            let guard = self.shards.read();
+            guard.iter().map(|s| s.name.clone()).collect()
+        };
+
+        let shard_count = shard_names.len();
+        if shard_count == 0 {
             return Err("No shards available".into());
         }
 
-        let strategy = self.strategy.read();
-        let index = match &*strategy {
-            DistributionStrategy::RoundRobin => {
-                self.round_robin_counter.fetch_add(1, Ordering::SeqCst) % shards.len()
-            }
-            DistributionStrategy::TimeBucket(cfg) => {
-                let ts = timestamp.unwrap_or_else(Utc::now);
-                self.get_time_bucket_index(key, ts, cfg, shards.len())
-            }
-            DistributionStrategy::KeySimilarity(cfg) => {
-                // Pass the actual slice of shards to satisfy the similarity logic
-                self.get_key_similarity_index(key, cfg, &shards)
-            }
-            DistributionStrategy::Adaptive(cfg) => {
-                // FIX: Match the 4-argument signature defined at line 1072
-                self.get_adaptive_index(key, timestamp, cfg, &shards)
-            }
-        };
+        // Master Shard reservation for metadata
+        if key == "system.index" || key == "/" || key.contains("metadata") {
+            return Ok(shard_names[0].clone());
+        }
+        let is_internal = key == "system.index" || key.starts_with(".system");
 
-        Ok(shards[index % shards.len()].name.clone())
+        if is_internal {
+            return Ok(shard_names[0].clone());
+        }
+        // Read lookup
+        {
+            let table = self.routing_table.read();
+            if let Some(target) = table.get(key) {
+                return Ok(target.clone());
+            }
+        }
+
+        if !is_write {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+
+            let mut hasher = DefaultHasher::new();
+            key.hash(&mut hasher);
+            let index = (hasher.finish() as usize) % shard_count;
+            return Ok(shard_names[index].clone());
+        }
+
+        // Write assignment (Round Robin)
+        let idx = self
+            .round_robin_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            % shard_count;
+        let target_shard_name = shard_names[idx].clone();
+
+        // Persist mapping
+        {
+            // We update the in-memory routing table first
+            let mut table = self.routing_table.write();
+            table.insert(key.to_string(), target_shard_name.clone());
+
+            // FIX: We need a WRITE lock on stores to call .put(&mut self, ...)
+            let mut stores_guard = self.stores.write();
+
+            if let Some(master_store) = stores_guard.get_mut(&shard_names[0]) {
+                let new_entry = format!("{}:{}\n", key, target_shard_name);
+
+                // Read the existing index
+                let mut current_index = match master_store.get("system.index") {
+                    Ok(Some(bytes)) => bytes,
+                    _ => Vec::new(),
+                };
+
+                current_index.extend_from_slice(new_entry.as_bytes());
+
+                // Now master_store is a &mut BlobStore, so .put works!
+                if let Err(e) = master_store.put("system.index", &current_index, None) {
+                    eprintln!("Failed to persist routing index to shard 0: {}", e);
+                }
+            }
+        }
+
+        Ok(target_shard_name)
+    }
+
+    // Helper to keep the main function clean
+    fn get_deterministic_index(&self, key: &str, shard_count: usize) -> usize {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        let mut hasher = DefaultHasher::new();
+        key.hash(&mut hasher);
+        (hasher.finish() as usize) % shard_count
     }
 
     fn get_time_bucket_index(
@@ -1048,6 +1178,7 @@ impl DataDistributionManager {
         (self.calculate_hash(&bucket_key) as usize) % shard_count
     }
 
+    #[allow(dead_code)]
     fn get_key_similarity_index(
         &self,
         key: &str,
@@ -1081,7 +1212,7 @@ impl DataDistributionManager {
             None => (self.calculate_hash(&key) as usize) % shard_count,
         }
     }
-
+    #[allow(dead_code)]
     fn get_adaptive_index(
         &self,
         key: &str,
@@ -1265,7 +1396,7 @@ impl DataDistributionManager {
         }
     }
 
-    fn hash_string(&self, s: &str) -> usize {
+    pub fn hash_string(&self, s: &str) -> usize {
         self.calculate_hash(&s) as usize
     }
 
@@ -1386,7 +1517,7 @@ impl DataDistributionManager {
         &self,
         key: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        self.get_target_shard(key, None)
+        self.get_target_shard(key, None, false)
     }
 
     /// Trigger rebalancing of data across shards
@@ -1534,7 +1665,7 @@ impl DataDistributionManager {
         key: &str,
         text: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let shard_name = self.get_target_shard(key, None)?;
+        let shard_name = self.get_target_shard(key, None, true)?;
         let mut vector_stores = self.vector_stores.write();
         let vector_store = vector_stores
             .get_mut(&shard_name)
@@ -1571,7 +1702,7 @@ impl DataDistributionManager {
         &self,
         record: TelemetryRecord,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let shard_name = self.get_target_shard(&record.key, Some(record.timestamp()))?;
+        let shard_name = self.get_target_shard(&record.key, Some(record.timestamp()), true)?;
         let mut stores = self.stores.write();
         let store = stores.get_mut(&shard_name).ok_or("Shard not found")?;
         let mut vector_stores = self.vector_stores.write();
@@ -2824,22 +2955,28 @@ impl DataDistributionManager {
         let stores = self.stores.read();
 
         for store in stores.values() {
-            let mut keys = store
-                .list_keys()
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-
-            // Apply prefix filter if provided
-            if let Some(p) = prefix {
-                keys.retain(|k| k.starts_with(p));
+            // THE FIX: Remove 'prefix' from here.
+            // We fetch all keys from the BlobStore and filter them ourselves.
+            if let Ok(shard_keys) = store.list_keys() {
+                for k in shard_keys {
+                    // 1. Filter out the internal index
+                    if k != "system.index" {
+                        // 2. Ensure it matches the prefix manually
+                        if let Some(p) = prefix {
+                            if k.starts_with(p) {
+                                all_keys.push(k);
+                            }
+                        } else {
+                            all_keys.push(k);
+                        }
+                    }
+                }
             }
-
-            all_keys.append(&mut keys);
         }
 
-        // Remove duplicates and sort
+        // De-duplicate and sort for a consistent unified view
         all_keys.sort();
         all_keys.dedup();
-
         Ok(all_keys)
     }
     #[allow(dead_code)]
