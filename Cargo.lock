@@ -287,6 +287,7 @@ dependencies = [
  "shadow-rs",
  "strsim",
  "tempfile",
+ "time-graph",
  "tracing",
  "unicode-segmentation",
  "uuid",
