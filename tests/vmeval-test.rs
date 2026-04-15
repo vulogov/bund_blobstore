@@ -17,6 +17,10 @@ const TEST4: &str = r#"
 "Hello world! I am a console.typewriter" console.typewriter
 "#;
 
+const TEST5: &str = r#"
+"2 40 +" bund.eval
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -61,5 +65,16 @@ mod tests {
         let mut vm = BUND.get().unwrap().write();
         let _ = vm.vm.stack.clear();
         let _ = vm.eval(TEST4).unwrap();
+    }
+
+    #[test]
+    fn test_eval_5() {
+        init_adam_bund();
+        let mut vm = BUND.get().unwrap().write();
+        let _ = vm.vm.stack.clear();
+        let vm = vm.eval(TEST5).unwrap();
+        assert_eq!(vm.vm.stack.current_stack_len(), 1);
+        let data = vm.vm.stack.pull().unwrap();
+        assert_eq!(data.cast_int().unwrap() as i64, 42 as i64);
     }
 }

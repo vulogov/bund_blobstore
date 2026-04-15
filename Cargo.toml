@@ -47,6 +47,7 @@ rust_multistackvm = ">=0.*.*"
 easy-error = "1.0.*"
 rusty-termcolor = "0.1.62"
 time-graph = "0.3.3"
+curl = "0.4.49"
 
 [dev-dependencies]
 tempfile = "3.0"
