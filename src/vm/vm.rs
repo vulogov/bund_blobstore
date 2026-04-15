@@ -7,10 +7,14 @@ use easy_error::{Error, bail};
 use parking_lot::RwLock;
 
 pub fn init_adam() -> Result<(), Error> {
+    let mut adam = Bund::new();
+    init_stdlib(&mut adam)?;
     match crate::BUND.get().is_some() {
         true => log::info!("BUND Adam instance already initialized."),
-        false => match crate::BUND.set(RwLock::new(Bund::new())) {
-            Ok(_) => log::debug!("BUND Adam instance succesfully initialized."),
+        false => match crate::BUND.set(RwLock::new(adam)) {
+            Ok(_) => {
+                log::debug!("BUND Adam instance succesfully initialized.")
+            }
             Err(err) => bail!("Error initializing BUND Adam instance: {:?}", err),
         },
     }
