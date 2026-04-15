@@ -1158,25 +1158,25 @@ impl DataDistributionManager {
     }
 
     // Helper to keep the main function clean
-    fn get_deterministic_index(&self, key: &str, shard_count: usize) -> usize {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        key.hash(&mut hasher);
-        (hasher.finish() as usize) % shard_count
-    }
+    // fn get_deterministic_index(&self, key: &str, shard_count: usize) -> usize {
+    //     use std::collections::hash_map::DefaultHasher;
+    //     use std::hash::{Hash, Hasher};
+    //     let mut hasher = DefaultHasher::new();
+    //     key.hash(&mut hasher);
+    //     (hasher.finish() as usize) % shard_count
+    // }
 
-    fn get_time_bucket_index(
-        &self,
-        _key: &str,
-        timestamp: DateTime<Utc>,
-        config: &TimeBucketConfig,
-        shard_count: usize,
-    ) -> usize {
-        let bucket_key = self.get_time_bucket_key(timestamp, config);
-        // Use our fxhash helper to turn the bucket string into a shard index
-        (self.calculate_hash(&bucket_key) as usize) % shard_count
-    }
+    // fn get_time_bucket_index(
+    //     &self,
+    //     _key: &str,
+    //     timestamp: DateTime<Utc>,
+    //     config: &TimeBucketConfig,
+    //     shard_count: usize,
+    // ) -> usize {
+    //     let bucket_key = self.get_time_bucket_key(timestamp, config);
+    //     // Use our fxhash helper to turn the bucket string into a shard index
+    //     (self.calculate_hash(&bucket_key) as usize) % shard_count
+    // }
 
     #[allow(dead_code)]
     fn get_key_similarity_index(
