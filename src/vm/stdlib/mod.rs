@@ -6,9 +6,9 @@ use easy_error::Error;
 pub mod bund;
 pub mod conditional;
 pub mod console;
-pub mod db;
 pub mod encoding;
 pub mod filesystem;
+pub mod global_db;
 pub mod system;
 
 pub fn init_bund_stdlib(vm: &mut Bund) -> Result<(), Error> {
@@ -17,6 +17,6 @@ pub fn init_bund_stdlib(vm: &mut Bund) -> Result<(), Error> {
     filesystem::init_stdlib(vm)?;
     conditional::init_stdlib(vm)?;
     system::init_stdlib(vm)?;
-    db::init_stdlib(vm)?;
+    global_db::init_stdlib(vm)?;
     Ok(())
 }
