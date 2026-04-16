@@ -98,7 +98,7 @@ pub use data_distribution::{
     TimeBucketSize,
 };
 
-pub use vm::BUND;
+pub use vm::{BUND, DB};
 
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string().clone()

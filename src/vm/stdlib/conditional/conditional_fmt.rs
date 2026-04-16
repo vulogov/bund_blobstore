@@ -1,10 +1,11 @@
 extern crate log;
-use rust_multistackvm::multistackvm::{VM};
-use std::collections::HashMap;
+
+use easy_error::{Error, bail};
+use leon::Template;
 use rust_dynamic::types::*;
 use rust_dynamic::value::Value;
-use easy_error::{Error, bail};
-use leon::{Template};
+use rust_multistackvm::multistackvm::VM;
+use std::collections::HashMap;
 
 fn render_template(vm: &mut VM, fmt_value: Value, value: Value) -> Result<String, Error> {
     let str_tpl = match value.cast_string() {
@@ -44,23 +45,19 @@ fn render_template(vm: &mut VM, fmt_value: Value, value: Value) -> Result<String
             }
         }
         match vm.stack.pull() {
-            Some(value) => {
-                match value.conv(STRING) {
-                    Ok(str_val) => {
-                        match str_val.cast_string() {
-                            Ok(val) => {
-                                values.insert(name.to_string(), val);
-                            }
-                            Err(err) => {
-                                bail!("FMT.STR error casting: {}", err);
-                            }
-                        }
+            Some(value) => match value.conv(STRING) {
+                Ok(str_val) => match str_val.cast_string() {
+                    Ok(val) => {
+                        values.insert(name.to_string(), val);
                     }
                     Err(err) => {
-                        bail!("FMT.STR error converting: {}", err);
+                        bail!("FMT.STR error casting: {}", err);
                     }
+                },
+                Err(err) => {
+                    bail!("FMT.STR error converting: {}", err);
                 }
-            }
+            },
             None => {
                 bail!("FMT.STR: stack is too shallow");
             }
@@ -75,7 +72,11 @@ fn render_template(vm: &mut VM, fmt_value: Value, value: Value) -> Result<String
     Ok(res)
 }
 
-pub fn conditional_fmt_fmt_str(vm: &mut VM, fmt_value: Value, value: Value) -> Result<String, Error> {
+pub fn conditional_fmt_fmt_str(
+    vm: &mut VM,
+    fmt_value: Value,
+    value: Value,
+) -> Result<String, Error> {
     if value.type_of() == STRING {
         match render_template(vm, fmt_value, value) {
             Ok(str_value) => {
@@ -117,16 +118,14 @@ pub fn conditional_fmt_str(vm: &mut VM, fmt_value: Value, value: Value) -> Resul
                 }
             }
         }
-        _ => {
-            match value.conv(STRING) {
-                Ok(str_value) => {
-                    return Ok(str_value.cast_string().unwrap());
-                }
-                Err(err) => {
-                    bail!("FMT.STR: conversion to STRING returned error: {}", err);
-                }
+        _ => match value.conv(STRING) {
+            Ok(str_value) => {
+                return Ok(str_value.cast_string().unwrap());
             }
-        }
+            Err(err) => {
+                bail!("FMT.STR: conversion to STRING returned error: {}", err);
+            }
+        },
     }
 }
 
@@ -157,7 +156,11 @@ pub fn conditional_run(vm: &mut VM, value: Value) -> Result<&mut VM, Error> {
         Ok(msg_val) => msg_val,
         Err(_) => match value.get(format!("{}", &name)) {
             Ok(msg_val) => msg_val,
-            Err(err) => bail!("FMT.RUN: getting message with name {} returns error: {}", &name, err),
+            Err(err) => bail!(
+                "FMT.RUN: getting message with name {} returns error: {}",
+                &name,
+                err
+            ),
         },
     };
     match conditional_fmt_str(vm, value, msg_val) {
@@ -165,7 +168,11 @@ pub fn conditional_run(vm: &mut VM, value: Value) -> Result<&mut VM, Error> {
             vm.stack.push(Value::from_string(str_val));
         }
         Err(err) => {
-            bail!("FMT.RUN: error converting message with name {} returns error: {}", &name, err);
+            bail!(
+                "FMT.RUN: error converting message with name {} returns error: {}",
+                &name,
+                err
+            );
         }
     }
     Ok(vm)
