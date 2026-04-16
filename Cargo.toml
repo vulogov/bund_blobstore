@@ -1,6 +1,6 @@
 [package]
 name = "bund_blobstore"
-version = "0.15.3"
+version = "0.15.4"
 edition = "2024"
 description = "Multifunctional data storage"
 license-file = "LICENSE"
@@ -28,7 +28,7 @@ hound = "3.5"   # For audio processing (WAV)
 base64 = "0.21" # For encoding binary data
 regex = "1.10"  # For pattern matching
 chrono = { version = "0.4.*", features = ["serde"] }
-rand = "0.10.0"
+rand = "0.8.5"
 unicode-segmentation = "1.10"
 rust-stemmers = "1.2.0"
 grok = "2.4.1"
@@ -62,6 +62,19 @@ sys_metrics = "0.2.7"
 yansi = "1.0.1"
 fancy-regex = "0.17.0"
 comfy-table = "7.2.2"
+distance = "0.4.0"
+natural = "0.5.0"
+fuzzy-matcher = "0.3.7"
+passwords = "3.1.16"
+fakeit = "1.4.1"
+srch = "0.0.1"
+textwrap = { version = "0.16.2", features= ["smawk", "unicode-width", "unicode-linebreak", "hyphenation"] }
+hyphenation = { version = "0.8.*", features= ["embed_all"] }
+rnltk = "0.4.0"
+deunicode = "1.6.2"
+wildmatch = "2.6.1"
+ulid = "1.2.1"
+lipsum = "0.9.1"
 
 [dev-dependencies]
 tempfile = "3.0"
