@@ -1,43 +1,39 @@
-use easy_error::{Error};
-use crate::cmd;
-use yansi::Paint;
-use rust_multistackvm::multistackvm::{VM};
-use fancy_regex::Regex;
-use crate::stdlib::functions::debug_fun::{debug_display_stack};
+use easy_error::Error;
+
+use crate::stdlib::functions::debug_fun::debug_display_stack;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::*;
+use fancy_regex::Regex;
+use rust_multistackvm::multistackvm::VM;
+use yansi::Paint;
 
 pub fn parse_msg(msg: String) -> Option<Vec<String>> {
     let mut res: Vec<String> = Vec::new();
     match Regex::new(r"^(?<msg>.*)?\((?<loc>.*)\)$") {
-        Ok(re) => {
-            match re.captures(&msg) {
-                Ok(cap) => {
-                    match cap {
-                        Some(groups) => {
-                            let msg = match groups.get(1) {
-                                Some(msg) => msg.as_str().to_string(),
-                                None => return None,
-                            };
-                            let loc = match groups.get(2) {
-                                Some(loc) => loc.as_str().to_string(),
-                                None => return None,
-                            };
-                            res.push(msg);
-                            res.push(loc);
-                        }
-                        None => {
-                            log::error!("Error msg grouping");
-                            return None;
-                        }
-                    }
+        Ok(re) => match re.captures(&msg) {
+            Ok(cap) => match cap {
+                Some(groups) => {
+                    let msg = match groups.get(1) {
+                        Some(msg) => msg.as_str().to_string(),
+                        None => return None,
+                    };
+                    let loc = match groups.get(2) {
+                        Some(loc) => loc.as_str().to_string(),
+                        None => return None,
+                    };
+                    res.push(msg);
+                    res.push(loc);
                 }
-                Err(err) => {
-                    log::error!("Error msg parsing: {}", err);
+                None => {
+                    log::error!("Error msg grouping");
+                    return None;
                 }
+            },
+            Err(err) => {
+                log::error!("Error msg parsing: {}", err);
             }
-        }
+        },
         Err(err) => {
             log::error!("Error compiling regular exression for msg parsing: {}", err);
             return None;
@@ -55,11 +51,10 @@ pub fn print_error_from_str(err: String, cli: &cmd::Cli) {
                     .load_preset(UTF8_FULL)
                     .apply_modifier(UTF8_ROUND_CORNERS)
                     .set_content_arrangement(ContentArrangement::Dynamic)
+                    .add_row(vec![Cell::new("Error"), Cell::new(msg_parsed[0].clone())])
                     .add_row(vec![
-                        Cell::new("Error"), Cell::new(msg_parsed[0].clone()),
-                    ])
-                    .add_row(vec![
-                        Cell::new("Location"), Cell::new(msg_parsed[1].clone()),
+                        Cell::new("Location"),
+                        Cell::new(msg_parsed[1].clone()),
                     ]);
                 println!("{table}");
             }
@@ -77,10 +72,12 @@ pub fn print_error_from_str(err: String, cli: &cmd::Cli) {
                     .apply_modifier(UTF8_ROUND_CORNERS)
                     .set_content_arrangement(ContentArrangement::Dynamic)
                     .add_row(vec![
-                        Cell::new("Error").fg(Color::Red), Cell::new(msg_parsed[0].clone()).fg(Color::White),
+                        Cell::new("Error").fg(Color::Red),
+                        Cell::new(msg_parsed[0].clone()).fg(Color::White),
                     ])
                     .add_row(vec![
-                        Cell::new("Location").fg(Color::Blue), Cell::new(msg_parsed[1].clone()).fg(Color::Yellow),
+                        Cell::new("Location").fg(Color::Blue),
+                        Cell::new(msg_parsed[1].clone()).fg(Color::Yellow),
                     ]);
                 println!("{table}");
             }
@@ -110,11 +107,10 @@ pub fn print_error_from_str_with_vm(vm: &mut VM, err: String, cli: &cmd::Cli) {
                     .load_preset(UTF8_FULL)
                     .apply_modifier(UTF8_ROUND_CORNERS)
                     .set_content_arrangement(ContentArrangement::Dynamic)
+                    .add_row(vec![Cell::new("Error"), Cell::new(msg_parsed[0].clone())])
                     .add_row(vec![
-                        Cell::new("Error"), Cell::new(msg_parsed[0].clone()),
-                    ])
-                    .add_row(vec![
-                        Cell::new("Location"), Cell::new(msg_parsed[1].clone()),
+                        Cell::new("Location"),
+                        Cell::new(msg_parsed[1].clone()),
                     ]);
                 println!("{table}");
             }
@@ -125,13 +121,21 @@ pub fn print_error_from_str_with_vm(vm: &mut VM, err: String, cli: &cmd::Cli) {
         }
         println!("[BUND] Content of the stack");
         match debug_display_stack::stdlib_debug_display_stack(vm) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(err) => {
                 print_error(err, cli);
             }
         }
     } else {
-        let bund = format!("{}{}{}{}{}{} ", Paint::yellow("["), Paint::red("B"), Paint::blue("U").bold(), Paint::white("N"), Paint::cyan("D"), Paint::green("]").bold());
+        let bund = format!(
+            "{}{}{}{}{}{} ",
+            Paint::yellow("["),
+            Paint::red("B"),
+            Paint::blue("U").bold(),
+            Paint::white("N"),
+            Paint::cyan("D"),
+            Paint::green("]").bold()
+        );
         match parse_msg(err.clone()) {
             Some(msg_parsed) => {
                 let mut table = Table::new();
@@ -140,10 +144,12 @@ pub fn print_error_from_str_with_vm(vm: &mut VM, err: String, cli: &cmd::Cli) {
                     .apply_modifier(UTF8_ROUND_CORNERS)
                     .set_content_arrangement(ContentArrangement::Dynamic)
                     .add_row(vec![
-                        Cell::new("Error").fg(Color::Red), Cell::new(msg_parsed[0].clone()).fg(Color::White),
+                        Cell::new("Error").fg(Color::Red),
+                        Cell::new(msg_parsed[0].clone()).fg(Color::White),
                     ])
                     .add_row(vec![
-                        Cell::new("Location").fg(Color::Blue), Cell::new(msg_parsed[1].clone()).fg(Color::Yellow),
+                        Cell::new("Location").fg(Color::Blue),
+                        Cell::new(msg_parsed[1].clone()).fg(Color::Yellow),
                     ]);
                 println!("{table}");
             }
@@ -154,7 +160,7 @@ pub fn print_error_from_str_with_vm(vm: &mut VM, err: String, cli: &cmd::Cli) {
         }
         println!("{} {}", &bund, Paint::green("Content of the stack"));
         match debug_display_stack::stdlib_debug_display_stack(vm) {
-            Ok(_) => {},
+            Ok(_) => {}
             Err(err) => {
                 print_error(err, cli);
             }
@@ -170,11 +176,10 @@ pub fn print_error_from_str_plain(err: String) {
                 .load_preset(UTF8_FULL)
                 .apply_modifier(UTF8_ROUND_CORNERS)
                 .set_content_arrangement(ContentArrangement::Dynamic)
+                .add_row(vec![Cell::new("Error"), Cell::new(msg_parsed[0].clone())])
                 .add_row(vec![
-                    Cell::new("Error"), Cell::new(msg_parsed[0].clone()),
-                ])
-                .add_row(vec![
-                    Cell::new("Location"), Cell::new(msg_parsed[1].clone()),
+                    Cell::new("Location"),
+                    Cell::new(msg_parsed[1].clone()),
                 ]);
             println!("{table}");
         }
@@ -193,11 +198,10 @@ pub fn format_error_from_str_plain(err: String) -> String {
                 .load_preset(UTF8_FULL)
                 .apply_modifier(UTF8_ROUND_CORNERS)
                 .set_content_arrangement(ContentArrangement::Dynamic)
+                .add_row(vec![Cell::new("Error"), Cell::new(msg_parsed[0].clone())])
                 .add_row(vec![
-                    Cell::new("Error"), Cell::new(msg_parsed[0].clone()),
-                ])
-                .add_row(vec![
-                    Cell::new("Location"), Cell::new(msg_parsed[1].clone()),
+                    Cell::new("Location"),
+                    Cell::new(msg_parsed[1].clone()),
                 ]);
             return format!("{table}");
         }

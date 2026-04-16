@@ -129,6 +129,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "augurs"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9fdc2e6862d3efa5152f15bacd0cb88fc0452a815cee31ac7999a3a080d871c0"
+dependencies = [
+ "augurs-core",
+]
+
+[[package]]
+name = "augurs-core"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "304774394b274d23e2440648709efd47ccffa94e03ccc26fa4501cf69f52300c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -272,6 +290,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "breakout"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80addd3742ebe02b9d5ed1a02823173baf52fa44794984905ce1258fe4aa536a"
+
+[[package]]
 name = "built"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -287,9 +311,11 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 name = "bund_blobstore"
 version = "0.15.4"
 dependencies = [
+ "augurs",
  "base64 0.21.7",
  "base64ct",
  "bincode",
+ "breakout",
  "bund_language_parser",
  "bundcore",
  "chrono",
@@ -304,6 +330,7 @@ dependencies = [
  "fakeit",
  "fancy-regex",
  "fastembed",
+ "fastrand",
  "filesystem",
  "flate2",
  "fs_extra",
@@ -313,22 +340,28 @@ dependencies = [
  "hound",
  "hyphenation",
  "image 0.24.9",
+ "interp",
  "lazy_static",
  "leon",
  "lipsum",
  "log",
+ "mathlab",
  "murmurhash3",
  "natural",
  "ndarray 0.15.6",
  "parking_lot",
  "passwords",
  "rand 0.8.5",
+ "rand_chacha 0.10.0",
+ "rand_core 0.10.1",
+ "rand_mt",
  "rayon",
  "redb",
  "regex",
  "reqwest 0.11.27",
  "rmp-serde",
  "rnltk",
+ "rstats",
  "rust-stemmers",
  "rust_dynamic",
  "rust_multistackvm",
@@ -343,6 +376,7 @@ dependencies = [
  "strsim 0.11.1",
  "sys-locale",
  "sys_metrics",
+ "ta",
  "tempfile",
  "termimad",
  "textwrap",
@@ -1197,9 +1231,9 @@ dependencies = [
 
 [[package]]
 name = "fastrand"
-version = "2.3.0"
+version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
 
 [[package]]
 name = "fax"
@@ -2160,6 +2194,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "indxvec"
+version = "1.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f80ec91439747afc38510dd9ddac3d776f3485197b9b7d6cc81c719db5cd8faa"
+
+[[package]]
+name = "interp"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "341be68f8dda23c0a581f926bd0cd346500e42a64649dc2ad137b3306c12440f"
+dependencies = [
+ "itertools",
+ "num-traits",
+]
+
+[[package]]
 name = "interpolate_name"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2536,6 +2586,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "670fdfda89751bc4a84ac13eaa63e205cf0fd22b4c9a5fbfa085b63c1f1d3a30"
 
 [[package]]
+name = "mathlab"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "329b91e5e36bfec3ee7c8a5ddd78066264caaf99a97f02a7ebe927fd64085a2f"
+
+[[package]]
 name = "matrixmultiply"
 version = "0.3.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2553,6 +2609,15 @@ checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
  "rayon",
+]
+
+[[package]]
+name = "medians"
+version = "3.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0567e21750b99d3ddbc4f57fc09be39381785d8930405a9b29c20c4b34bdcc31"
+dependencies = [
+ "indxvec",
 ]
 
 [[package]]
@@ -3388,6 +3453,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
+name = "ran"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ec3b34b7476ace56430f442988b1faca754c3f05932f4d32a3a6cb7367f25f8"
+
+[[package]]
 name = "rand"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3465,6 +3536,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_chacha"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e6af7f3e25ded52c41df4e0b1af2d047e45896c2f3281792ed68a1c243daedb"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.10.1",
+]
+
+[[package]]
 name = "rand_core"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3507,12 +3588,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
 name = "rand_hc"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ca3129af7b92a17112d59ad498c6f81eaf463253766b90396d39ea7a39d6613c"
 dependencies = [
  "rand_core 0.5.1",
+]
+
+[[package]]
+name = "rand_mt"
+version = "6.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4f926523c30345680eb6641f4256a151f0826c5605e190177541f9e40a32390"
+dependencies = [
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -3830,6 +3926,18 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "rstats"
+version = "2.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f72b7a2e7e87081002b4a865353f52388ca041cf0e94f67d515160e0632105aa"
+dependencies = [
+ "indxvec",
+ "medians",
+ "ran",
+ "rayon",
 ]
 
 [[package]]
@@ -4496,6 +4604,12 @@ dependencies = [
  "core-foundation-sys",
  "libc",
 ]
+
+[[package]]
+name = "ta"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "609409d472a0a7d8d4dd9e19891bbdef546b9dce670c3057d0e02192dc541226"
 
 [[package]]
 name = "tempdir"
