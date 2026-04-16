@@ -292,6 +292,7 @@ dependencies = [
  "serde_cbor",
  "serde_json",
  "shadow-rs",
+ "spin_sleep",
  "strsim",
  "sys-locale",
  "tempfile",
@@ -299,6 +300,7 @@ dependencies = [
  "time-graph",
  "tracing",
  "unicode-segmentation",
+ "unix_path",
  "uuid",
 ]
 
@@ -4005,6 +4007,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin_sleep"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c07347b7c0301b9adba4350bdcf09c039d0e7160922050db0439b3c6723c8ab"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "spm_precompiled"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4558,6 +4569,21 @@ name = "unix-ts-macros"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cf5fd32fe602f27c0db508ffab4a845120fdb7474ea78c01e5c483ac1b09951"
+
+[[package]]
+name = "unix_path"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af8e291873ae77c4c8d9c9b34d0bee68a35b048fb39c263a5155e0e353783eaf"
+dependencies = [
+ "unix_str",
+]
+
+[[package]]
+name = "unix_str"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ace0b4755d0a2959962769239d56267f8a024fef2d9b32666b3dcd0946b0906"
 
 [[package]]
 name = "untrusted"
