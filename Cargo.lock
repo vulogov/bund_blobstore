@@ -253,6 +253,7 @@ name = "bund_blobstore"
 version = "0.15.3"
 dependencies = [
  "base64 0.21.7",
+ "base64ct",
  "bincode",
  "bund_language_parser",
  "bundcore",
