@@ -1,6 +1,5 @@
 extern crate log;
 
-use crate::cmd;
 use bundcore::bundcore::Bund;
 use easy_error::{Error, bail};
 use mathlab::math;

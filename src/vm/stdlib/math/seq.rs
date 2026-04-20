@@ -4,6 +4,8 @@ use mathlab::functions::args;
 use rust_dynamic::value::Value;
 use rust_multistackvm::multistackvm::VM;
 
+use crate::vm::helpers;
+
 pub enum Ops {
     Exp,
 }

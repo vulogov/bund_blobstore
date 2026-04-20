@@ -9,6 +9,8 @@ pub mod console;
 pub mod encoding;
 pub mod filesystem;
 pub mod global_db;
+pub mod math;
+pub mod statistics;
 pub mod string;
 pub mod system;
 
@@ -20,5 +22,7 @@ pub fn init_bund_stdlib(vm: &mut Bund) -> Result<(), Error> {
     system::init_stdlib(vm)?;
     global_db::init_stdlib(vm)?;
     string::init_stdlib(vm)?;
+    statistics::init_stdlib(vm)?;
+    math::init_stdlib(vm)?;
     Ok(())
 }

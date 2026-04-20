@@ -5,7 +5,7 @@ use easy_error::Error;
 use fastrand::u64;
 use lazy_static::lazy_static;
 use rand_chacha::ChaCha20Rng;
-use rand_core::{RngCore, SeedableRng};
+use rand_chacha::rand_core::{RngCore, SeedableRng};
 use rand_mt::Mt64;
 use rust_dynamic::value::Value;
 use std::sync::Mutex;

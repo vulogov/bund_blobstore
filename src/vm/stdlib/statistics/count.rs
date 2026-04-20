@@ -1,6 +1,6 @@
 extern crate log;
 
-use crate::stdlib::vm::statistics;
+use crate::vm::stdlib::statistics;
 use bundcore::bundcore::Bund;
 use easy_error::{Error, bail};
 use rust_dynamic::value::Value;

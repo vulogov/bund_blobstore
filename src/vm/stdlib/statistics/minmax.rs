@@ -1,6 +1,6 @@
 extern crate log;
 
-use crate::stdlib::vm::statistics;
+use crate::vm::stdlib::statistics;
 use bundcore::bundcore::Bund;
 use easy_error::{Error, bail};
 use rust_dynamic::value::Value;
@@ -124,31 +124,31 @@ pub fn stdlib_math_minmax_workbench_keep_max(vm: &mut VM) -> Result<&mut VM, Err
 }
 
 pub fn init_stdlib(vm: &mut Bund) -> Result<(), Error> {
-    let _ = bc
+    let _ = vm
         .vm
         .register_inline("math.min".to_string(), stdlib_math_minmax_stack_consume_min)?;
-    let _ = bc
+    let _ = vm
         .vm
         .register_inline("math.max".to_string(), stdlib_math_minmax_stack_consume_max)?;
-    let _ = bc.vm.register_inline(
+    let _ = vm.vm.register_inline(
         "math.min.".to_string(),
         stdlib_math_minmax_workbench_consume_min,
     )?;
-    let _ = bc.vm.register_inline(
+    let _ = vm.vm.register_inline(
         "math.max.".to_string(),
         stdlib_math_minmax_workbench_consume_max,
     )?;
-    let _ = bc
+    let _ = vm
         .vm
         .register_inline("math.min,".to_string(), stdlib_math_minmax_stack_keep_min)?;
-    let _ = bc
+    let _ = vm
         .vm
         .register_inline("math.max,".to_string(), stdlib_math_minmax_stack_keep_max)?;
-    let _ = bc.vm.register_inline(
+    let _ = vm.vm.register_inline(
         "math.min.,".to_string(),
         stdlib_math_minmax_workbench_keep_min,
     )?;
-    let _ = bc.vm.register_inline(
+    let _ = vm.vm.register_inline(
         "math.max.,".to_string(),
         stdlib_math_minmax_workbench_keep_max,
     )?;

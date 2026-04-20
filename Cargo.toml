@@ -79,12 +79,13 @@ ta = "0.5.0"
 rand_mt = "6.0.3"
 mathlab = "1.5.0"
 interp = "2.1.2"
-augurs = "0.10.2"
+augurs =  { version = "0.9.*", features = ["forecaster", "ets", "mstl", "outlier", "dtw", "clustering", "seasons"] }
 breakout = "0.4.0"
 fastrand = "2.4.1"
-rand_chacha = "0.10.0"
+rand_chacha = "0.9.0"
 rand_core = "0.10.1"
 rstats = "2.1.12"
+anomaly_detection = "0.4.0"
 
 [dev-dependencies]
 tempfile = "3.0"

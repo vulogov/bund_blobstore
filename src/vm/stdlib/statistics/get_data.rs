@@ -1,7 +1,6 @@
 extern crate log;
 
-use crate::stdlib::vm::statistics;
-use bundcore::bundcore::Bund;
+use crate::vm::stdlib::statistics;
 use easy_error::{Error, bail};
 use rust_dynamic::types::*;
 use rust_multistackvm::multistackvm::{StackOps, VM};

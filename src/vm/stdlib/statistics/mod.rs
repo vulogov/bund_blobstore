@@ -19,4 +19,5 @@ pub fn init_stdlib(vm: &mut Bund) -> Result<(), Error> {
     count::init_stdlib(vm)?;
     statistics::init_stdlib(vm)?;
     minmax::init_stdlib(vm)?;
+    Ok(())
 }

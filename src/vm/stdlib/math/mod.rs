@@ -1,6 +1,7 @@
 extern crate log;
 
 use bundcore::bundcore::Bund;
+use easy_error::Error;
 
 pub mod anomalies;
 pub mod breakout;

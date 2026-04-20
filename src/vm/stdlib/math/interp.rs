@@ -1,6 +1,6 @@
 extern crate log;
 
-use crate::stdlib::functions::statistics;
+use crate::vm::stdlib::statistics;
 use bundcore::bundcore::Bund;
 use easy_error::{Error, bail};
 use interp::{InterpMode, interp};
