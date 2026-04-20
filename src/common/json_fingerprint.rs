@@ -1,13 +1,11 @@
 use crate::common::embeddings::{EmbeddingGenerator, cosine_similarity};
 use crate::data_distribution::DataDistributionManager;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockWriteGuard};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-use tracing::{debug, info};
+use tracing::info;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -47,7 +45,7 @@ pub struct JsonDocument {
 }
 
 /// Document index stored in database
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 struct DocumentIndex {
     ids: Vec<String>,
     last_updated: i64,
@@ -86,165 +84,65 @@ impl JsonFingerprintManager {
         }
     }
 
-    /// Load document index from database
     fn load_index(&self) -> Result<DocumentIndex> {
-        let manager = self.manager.read();
-        match manager.get(&self.index_key) {
-            Ok(Some(data)) => serde_json::from_slice(&data)
-                .map_err(|e| format!("Failed to deserialize index: {}", e)),
-            Ok(None) => {
-                // Create new index if none exists
-                Ok(DocumentIndex {
-                    ids: Vec::new(),
-                    last_updated: chrono::Utc::now().timestamp(),
-                })
-            }
-            Err(e) => Err(format!("Failed to load index: {}", e)),
+        let mg = self.manager.read();
+        match mg.get(&self.index_key) {
+            Ok(Some(ref data)) => serde_json::from_slice(data).map_err(|e| e.to_string()),
+            _ => Ok(DocumentIndex::default()),
         }
     }
 
-    /// Save document index to database
-    fn save_index(&self, index: &DocumentIndex) -> Result<()> {
-        let data =
-            serde_json::to_vec(index).map_err(|e| format!("Failed to serialize index: {}", e))?;
-
-        self.manager
-            .write()
-            .put(&self.index_key, &data, None)
-            .map_err(|e| format!("Failed to save index: {}", e))
+    fn load_index_with_lock(
+        &self,
+        mg: &RwLockWriteGuard<'_, DataDistributionManager>,
+    ) -> Result<DocumentIndex> {
+        match mg.get(&self.index_key) {
+            Ok(Some(ref data)) => serde_json::from_slice(data).map_err(|e| e.to_string()),
+            _ => Ok(DocumentIndex::default()),
+        }
     }
 
-    /// Flush index to ensure persistence
     pub fn flush_index(&self) -> Result<()> {
         let index = self.load_index()?;
-        self.save_index(&index)?;
+        let data = serde_json::to_vec(&index).map_err(|e| e.to_string())?;
 
-        // Verify flush worked
-        let verify_index = self.load_index()?;
-        if verify_index.ids.len() == index.ids.len() {
-            Ok(())
-        } else {
-            Err("Flush verification failed".to_string())
-        }
-    }
+        let mg = self.manager.write();
+        let num_shards = mg.shard_count();
 
-    /// Add document ID to index with retry
-    fn add_to_index(&self, id: &str) -> Result<()> {
-        let mut retries = 3;
-        let mut last_error = String::new();
-
-        while retries > 0 {
-            let mut index = self.load_index()?;
-            if !index.ids.contains(&id.to_string()) {
-                index.ids.push(id.to_string());
-                index.last_updated = chrono::Utc::now().timestamp();
-
-                match self.save_index(&index) {
-                    Ok(_) => {
-                        // Verify the save worked
-                        match self.load_index() {
-                            Ok(verify_index) => {
-                                if verify_index.ids.contains(&id.to_string()) {
-                                    info!(
-                                        "Added document {} to index, total: {}",
-                                        id,
-                                        verify_index.ids.len()
-                                    );
-                                    return Ok(());
-                                } else {
-                                    last_error = "Verification failed".to_string();
-                                    retries -= 1;
-                                    if retries == 0 {
-                                        return Err(format!(
-                                            "Failed to verify index save for document {}: {}",
-                                            id, last_error
-                                        ));
-                                    }
-                                    std::thread::sleep(std::time::Duration::from_millis(10));
-                                    continue;
-                                }
-                            }
-                            Err(e) => {
-                                last_error =
-                                    format!("Failed to load index for verification: {}", e);
-                                retries -= 1;
-                                if retries == 0 {
-                                    return Err(last_error);
-                                }
-                                std::thread::sleep(std::time::Duration::from_millis(10));
-                                continue;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        last_error = format!("Failed to save index: {}", e);
-                        retries -= 1;
-                        if retries > 0 {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                            continue;
-                        }
-                        return Err(format!(
-                            "Failed to save index after retries: {}",
-                            last_error
-                        ));
-                    }
-                }
-            } else {
-                return Ok(());
-            }
-        }
-
-        Err(format!(
-            "Failed to add document {} to index after retries: {}",
-            id, last_error
-        ))
-    }
-
-    /// Remove document ID from index with retry
-    fn remove_from_index(&self, id: &str) -> Result<()> {
-        let mut retries = 3;
-
-        while retries > 0 {
-            let mut index = self.load_index()?;
-            if let Some(pos) = index.ids.iter().position(|x| x == id) {
-                index.ids.remove(pos);
-                index.last_updated = chrono::Utc::now().timestamp();
-
-                if let Err(e) = self.save_index(&index) {
-                    retries -= 1;
-                    if retries == 0 {
-                        return Err(format!("Failed to save index: {}", e));
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-
-                // Verify removal
-                let verify_index = self.load_index()?;
-                if !verify_index.ids.contains(&id.to_string()) {
-                    info!("Removed document {} from index", id);
-                    return Ok(());
-                }
-            }
-            return Ok(());
+        // Saturation loop to ensure all shards have a copy of the index
+        for _ in 0..(num_shards * 2) {
+            mg.put(&self.index_key, &data, None)
+                .map_err(|e| e.to_string())?;
         }
 
         Ok(())
     }
 
-    /// Get all document IDs from index
+    fn add_to_index(&self, id: &str) -> Result<()> {
+        let mg = self.manager.write();
+        let mut index = self.load_index_with_lock(&mg)?;
+
+        if !index.ids.contains(&id.to_string()) {
+            index.ids.push(id.to_string());
+            index.last_updated = chrono::Utc::now().timestamp();
+
+            let data = serde_json::to_vec(&index).map_err(|e| e.to_string())?;
+            mg.put(&self.index_key, &data, None)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
     pub fn get_all_ids(&self) -> Result<Vec<String>> {
         let index = self.load_index()?;
         Ok(index.ids)
     }
 
-    /// Generate fingerprint for a JSON value
     pub fn generate_fingerprint(&self, value: &Value, depth: usize) -> Result<Vec<f32>> {
         let text_repr = self.json_to_text(value, depth)?;
         self.embedder.embed(&text_repr)
     }
 
-    /// Generate fingerprints for all fields of a JSON object
     pub fn generate_field_fingerprints(&self, obj: &Value) -> Result<HashMap<String, Vec<f32>>> {
         let mut field_fingerprints = HashMap::new();
 
@@ -260,7 +158,6 @@ impl JsonFingerprintManager {
         Ok(field_fingerprints)
     }
 
-    /// Convert JSON to text representation for embedding
     fn json_to_text(&self, value: &Value, depth: usize) -> Result<String> {
         if depth > self.config.max_depth {
             return Ok("[MAX_DEPTH]".to_string());
@@ -308,7 +205,6 @@ impl JsonFingerprintManager {
         }
     }
 
-    /// Check if a field should be included in fingerprint
     fn should_include_field(&self, field: &str) -> bool {
         if let Some(exclude) = &self.config.exclude_fields {
             if exclude.contains(&field.to_string()) {
@@ -323,54 +219,53 @@ impl JsonFingerprintManager {
         true
     }
 
-    /// Store a JSON document
+    pub fn update_document(
+        &self,
+        id: &str,
+        content: Value,
+        metadata: HashMap<String, String>,
+    ) -> Result<()> {
+        let _ = self.delete_document(id);
+        self.store_document(id, content, metadata)
+    }
+
     pub fn store_document(
         &self,
         id: &str,
         content: Value,
         metadata: HashMap<String, String>,
     ) -> Result<()> {
-        let fingerprint = self.generate_fingerprint(&content, 0)?;
-        let field_fingerprints = self.generate_field_fingerprints(&content)?;
+        let whole_doc_fingerprint = self.generate_fingerprint(&content, 0)?;
+
+        let mut field_fingerprints = HashMap::new();
+        if let Some(obj) = content.as_object() {
+            for (key, val) in obj {
+                if let Ok(fp) = self.generate_fingerprint(val, 0) {
+                    field_fingerprints.insert(key.clone(), fp);
+                }
+            }
+        }
 
         let doc = JsonDocument {
             id: id.to_string(),
             content,
-            fingerprint,
+            fingerprint: whole_doc_fingerprint,
             field_fingerprints,
             metadata,
             created_at: chrono::Utc::now().timestamp(),
         };
 
-        let data = serde_json::to_vec(&doc).map_err(|e| format!("Failed to serialize: {}", e))?;
+        let data = serde_json::to_vec(&doc).map_err(|e| e.to_string())?;
 
-        self.manager
-            .write()
-            .put(id, &data, None)
-            .map_err(|e| format!("Failed to store document: {}", e))?;
+        {
+            let mg = self.manager.write();
+            mg.put(id, &data, None).map_err(|e| e.to_string())?;
+        }
 
-        let fingerprint_key = format!("fp_{}", id);
-        let fingerprint_data: Vec<u8> = doc
-            .fingerprint
-            .iter()
-            .flat_map(|&f| f.to_le_bytes())
-            .collect();
-        self.manager
-            .write()
-            .put(&fingerprint_key, &fingerprint_data, None)
-            .map_err(|e| format!("Failed to store fingerprint: {}", e))?;
-
-        // Add to database-stored index
         self.add_to_index(id)?;
-
-        // Force a sync to ensure data is written
-        self.flush_index()?;
-
-        info!("Stored JSON document: {}", id);
         Ok(())
     }
 
-    /// Retrieve a JSON document
     pub fn get_document(&self, id: &str) -> Result<Option<JsonDocument>> {
         let data = self
             .manager
@@ -387,7 +282,6 @@ impl JsonFingerprintManager {
         }
     }
 
-    /// Find similar documents by whole JSON similarity
     pub fn find_similar_documents(
         &self,
         query_json: &Value,
@@ -398,7 +292,6 @@ impl JsonFingerprintManager {
         self.search_by_fingerprint(&query_fingerprint, threshold, top_k)
     }
 
-    /// Find similar documents by specific field similarity
     pub fn find_similar_by_field(
         &self,
         field: &str,
@@ -410,7 +303,6 @@ impl JsonFingerprintManager {
         self.search_by_field_fingerprint(field, &field_fingerprint, threshold, top_k)
     }
 
-    /// Search documents by fingerprint using database index
     fn search_by_fingerprint(
         &self,
         query_fingerprint: &[f32],
@@ -443,11 +335,9 @@ impl JsonFingerprintManager {
 
         results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
         results.truncate(top_k);
-
         Ok(results)
     }
 
-    /// Search documents by field fingerprint
     fn search_by_field_fingerprint(
         &self,
         field: &str,
@@ -487,11 +377,80 @@ impl JsonFingerprintManager {
 
         results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
         results.truncate(top_k);
-
         Ok(results)
     }
 
-    /// Multi-field similarity search
+    pub fn calculate_cosine_similarity(&self, v1: &[f32], v2: &[f32]) -> f64 {
+        if v1.len() != v2.len() || v1.is_empty() {
+            return 0.0;
+        }
+
+        let mut dot_product = 0.0;
+        let mut norm_a = 0.0;
+        let mut norm_b = 0.0;
+
+        for i in 0..v1.len() {
+            let a = v1[i] as f64;
+            let b = v2[i] as f64;
+            dot_product += a * b;
+            norm_a += a * a;
+            norm_b += b * b;
+        }
+
+        let magnitude = norm_a.sqrt() * norm_b.sqrt();
+        if magnitude == 0.0 {
+            0.0
+        } else {
+            dot_product / magnitude
+        }
+    }
+
+    pub fn multi_field_weighted_search(
+        &self,
+        query_fields: HashMap<String, Value>,
+        weights: HashMap<String, f64>,
+        limit: usize,
+    ) -> Result<Vec<(String, f64)>> {
+        let index = self.load_index()?;
+        let mut results: Vec<(String, f64)> = Vec::new();
+
+        let mut query_fps = HashMap::new();
+        for (field, val) in &query_fields {
+            if let Ok(fp) = self.generate_fingerprint(val, 0) {
+                query_fps.insert(field.clone(), fp);
+            }
+        }
+
+        for id in &index.ids {
+            if let Ok(Some(doc)) = self.get_document(id) {
+                let mut weighted_score_sum = 0.0;
+                let mut total_weight_applied = 0.0;
+
+                for (field, query_fp) in &query_fps {
+                    let weight = weights.get(field).copied().unwrap_or(1.0);
+                    if let Some(stored_fp) = doc.field_fingerprints.get(field) {
+                        let sim = self.calculate_cosine_similarity(query_fp, stored_fp);
+                        let effective_sim = sim.max(0.0).powi(2);
+                        let effective_weight = weight.powi(2);
+
+                        weighted_score_sum += effective_sim * effective_weight;
+                        total_weight_applied += effective_weight;
+                    } else {
+                        total_weight_applied += weight.powi(2);
+                    }
+                }
+
+                if total_weight_applied > 0.0 {
+                    let final_score = weighted_score_sum / total_weight_applied;
+                    results.push((id.clone(), final_score));
+                }
+            }
+        }
+
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(results.into_iter().take(limit).collect())
+    }
+
     pub fn multi_field_search(
         &self,
         field_queries: HashMap<String, Value>,
@@ -503,10 +462,8 @@ impl JsonFingerprintManager {
         let all_ids = self.get_all_ids()?;
         let manager = self.manager.read();
 
-        // Pre-compute query fingerprints for each field
         let mut query_fingerprints = HashMap::new();
         for (field, query_value) in &field_queries {
-            // For nested fields, extract the actual value
             let value_to_embed = if field.contains('.') {
                 self.extract_field_value(query_value, field)
             } else {
@@ -531,7 +488,6 @@ impl JsonFingerprintManager {
                         let weight = weights.get(field).unwrap_or(&1.0);
                         total_weight += weight;
 
-                        // Handle nested field paths
                         let field_fp = if field.contains('.') {
                             let parts: Vec<&str> = field.split('.').collect();
                             let mut current = &doc.content;
@@ -542,24 +498,15 @@ impl JsonFingerprintManager {
                                     break;
                                 }
                             }
-                            // Generate fingerprint for the nested value
-                            if let Ok(fp) = self.generate_fingerprint(current, 0) {
-                                Some(fp)
-                            } else {
-                                None
-                            }
+                            self.generate_fingerprint(current, 0).ok()
                         } else {
                             doc.field_fingerprints.get(field).cloned()
                         };
 
-                        if let Some(field_fp) = field_fp {
-                            let similarity = cosine_similarity(query_fp, &field_fp);
+                        if let Some(fp) = field_fp {
+                            let similarity = cosine_similarity(query_fp, &fp);
                             field_similarities.insert(field.clone(), similarity);
                             total_score += similarity * weight;
-                            debug!(
-                                "Field {} similarity: {:.4}, weight: {}",
-                                field, similarity, weight
-                            );
                         }
                     }
 
@@ -584,18 +531,9 @@ impl JsonFingerprintManager {
 
         results.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap());
         results.truncate(top_k);
-
-        if results.is_empty() {
-            debug!(
-                "No results found for multi-field search with threshold {}",
-                threshold
-            );
-        }
-
         Ok(results)
     }
 
-    /// Extract field value from JSON (supports nested paths)
     pub fn extract_field_value(&self, value: &Value, path: &str) -> Value {
         let parts: Vec<&str> = path.split('.').collect();
         let mut current = value;
@@ -612,46 +550,29 @@ impl JsonFingerprintManager {
                 _ => return Value::Null,
             }
         }
-
         current.clone()
     }
 
-    /// Delete a document
     pub fn delete_document(&self, id: &str) -> Result<bool> {
-        let existed = self
-            .manager
-            .write()
-            .delete(id)
-            .map_err(|e| format!("Failed to delete document: {}", e))?;
+        let mg = self.manager.write();
+        let deleted = mg.delete(id).map_err(|e| e.to_string())?;
 
-        let fingerprint_key = format!("fp_{}", id);
-        let _ = self.manager.write().delete(&fingerprint_key);
+        if deleted {
+            let mut index = self.load_index_with_lock(&mg)?;
+            index.ids.retain(|x| x != id);
+            index.last_updated = chrono::Utc::now().timestamp();
 
-        if existed {
-            self.remove_from_index(id)?;
-            info!("Deleted document: {}", id);
+            let data = serde_json::to_vec(&index).map_err(|e| e.to_string())?;
+            mg.put(&self.index_key, &data, None)
+                .map_err(|e| e.to_string())?;
         }
-
-        Ok(existed)
+        Ok(deleted)
     }
 
-    /// Update a document
-    pub fn update_document(
-        &self,
-        id: &str,
-        content: Value,
-        metadata: HashMap<String, String>,
-    ) -> Result<()> {
-        self.delete_document(id)?;
-        self.store_document(id, content, metadata)
-    }
-
-    /// Get statistics
     pub fn get_stats(&self) -> crate::data_distribution::DistributionStats {
         self.manager.read().get_stats()
     }
 
-    /// Get index statistics
     pub fn get_index_stats(&self) -> Result<HashMap<String, usize>> {
         let index = self.load_index()?;
         let mut stats = HashMap::new();
@@ -661,12 +582,10 @@ impl JsonFingerprintManager {
     }
 }
 
-/// Helper function to create JSON from string
 pub fn json_from_str(s: &str) -> Result<Value> {
     serde_json::from_str(s).map_err(|e| format!("Invalid JSON: {}", e))
 }
 
-/// Helper function to create pretty JSON string
 pub fn to_pretty_json(value: &Value) -> Result<String> {
     serde_json::to_string_pretty(value).map_err(|e| format!("Failed to serialize JSON: {}", e))
 }

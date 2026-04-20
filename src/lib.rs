@@ -16,6 +16,7 @@ pub mod sharding;
 pub mod timeline;
 pub mod vector;
 pub mod vector_timeline;
+pub mod vm;
 
 // Re-export commonly used types
 pub use blobstore::{BlobMetadata, BlobStore, QueryOptions};
@@ -96,6 +97,8 @@ pub use data_distribution::{
     TimeBucketConfig,
     TimeBucketSize,
 };
+
+pub use vm::{BUND, DB};
 
 pub fn version() -> String {
     env!("CARGO_PKG_VERSION").to_string().clone()

@@ -470,7 +470,7 @@ impl VirtualFilesystem {
 
         let shard = self
             .manager
-            .get_target_shard(&key, None)
+            .get_target_shard(&key, None, false)
             .map_err(|e| e.to_string())?;
         self.manager.sync_shard(&shard).map_err(|e| e.to_string())?;
         Ok(())
