@@ -2983,6 +2983,30 @@ impl DataDistributionManager {
     fn check_trait_usage<T: Hash>(&self, _item: T) {
         // This exists purely to satisfy the compiler that 'Hash' is used.
     }
+    pub fn index_telemetry_vector(
+        &self,
+        record_id: &str,
+        text_to_embed: &str,
+        timestamp: Option<DateTime<Utc>>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 1. Determine the shard
+        let shard_name = self.get_target_shard(record_id, timestamp, true)?;
+
+        // 2. Format the key exactly how search_vector_time expects it
+        let vector_key = format!("vector:telemetry:{}", record_id);
+
+        // 3. Access the vector store and let IT handle the embedding
+        let mut vector_stores = self.vector_stores.write();
+        let v_store = vector_stores
+            .get_mut(&shard_name)
+            .ok_or("Shard not found")?;
+
+        // Using the method the compiler suggested:
+        // Most likely: key, text, and an optional prefix
+        v_store.insert_text(&vector_key, text_to_embed, None)?;
+
+        Ok(())
+    }
 }
 
 // Helper function for Levenshtein distance
