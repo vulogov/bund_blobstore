@@ -13,6 +13,8 @@ pub mod stdlib;
 pub mod helpers;
 
 pub mod db;
+pub mod log_provider;
+pub use log_provider::LogProvider;
 
 pub static BUND: OnceLock<RwLock<Bund>> = OnceLock::new();
 pub static DB: OnceLock<DataDistributionManager> = OnceLock::new();
